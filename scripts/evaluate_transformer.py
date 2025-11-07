@@ -392,8 +392,28 @@ def evaluate_split(trainer: Trainer, dataset: Dataset, human_name: str, classes:
     }
 
 
+def resolve_model_path(model_path: Path) -> Path:
+    """If model_path is a directory containing trainer_state.json, return the best checkpoint path."""
+    if (model_path / "trainer_state.json").exists():
+        state = json.loads((model_path / "trainer_state.json").read_text())
+        best_ckpt = state.get("best_model_checkpoint")
+        if best_ckpt:
+            candidate = Path(best_ckpt)
+            if candidate.exists():
+                print(f"[eval] Using best checkpoint from trainer_state.json: {candidate}")
+                return candidate
+            # try relative to the parent directory if the stored path was relative
+            relative_candidate = (model_path / candidate).resolve()
+            if relative_candidate.exists():
+                print(f"[eval] Using best checkpoint (relative) from trainer_state.json: {relative_candidate}")
+                return relative_candidate
+            print(f"[warn] Stored best checkpoint path {best_ckpt} not found; falling back to model_path.")
+    return model_path
+
+
 def main() -> None:
     args = parse_args()
+    model_path = resolve_model_path(args.model_path)
 
     tokens_npz = np.load(args.tokens_dir / "gse144735_gene_rank_tokens.npz")
     tokens = tokens_npz["tokens"]
@@ -410,7 +430,7 @@ def main() -> None:
     model_vocab = load_gene_vocab(args.model_vocab)
     gene_name_dict = load_gene_name_dict(args.model_gene_name_dict) if args.model_gene_name_dict else None
 
-    config = AutoConfig.from_pretrained(str(args.model_path))
+    config = AutoConfig.from_pretrained(str(model_path))
     labels_encoded, id2label_map, label2id_map = align_labels_with_config(metadata[args.label_column], config)
     classes = [id2label_map[idx] for idx in sorted(id2label_map)]
 
@@ -429,7 +449,7 @@ def main() -> None:
     )
     pad_fill_value = dataset_pad_fill_value
 
-    model = AutoModelForSequenceClassification.from_pretrained(str(args.model_path), config=config)
+    model = AutoModelForSequenceClassification.from_pretrained(str(model_path), config=config)
     training_args = TrainingArguments(
         output_dir=str(args.model_path / "eval_tmp"),
         per_device_eval_batch_size=args.eval_batch_size,
