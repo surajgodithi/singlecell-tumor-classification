@@ -46,6 +46,11 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
 - The script writes validation/test metrics to `metrics.json` inside the output directory and saves the best checkpoint for downstream analysis.
 - `model_vocab` in `configs/finetune.yaml` can point to either a TSV (gene symbol -> token id) or Geneformer's pickled `token_dictionary_gc104M.pkl`; the script auto-detects the format and remaps dataset genes accordingly. Provide `model_gene_name_dict` (e.g., Geneformer's `gene_name_id_dict_gc104M.pkl`) so symbols can be translated to the pretrained model's identifiers when a direct lookup is missing.
 - For every new dataset, capture both the rank-based baseline (`scripts/rank_nb_baseline.py`) and the transformer fine-tune metrics (using either the original Geneformer checkpoint or a previously fine-tuned one) so improvements are always benchmarked per dataset.
+- Recommended per-dataset workflow:
+  1. Run `scripts/rank_nb_baseline.py` on that dataset’s tokens/splits and log the donor-wise metrics.
+  2. Fine-tune Geneformer starting from the original Hugging Face checkpoint and compare against the baseline.
+  3. Before updating a multi-cancer checkpoint, evaluate it zero-shot on the new dataset’s test split to measure cross-dataset generalization.
+  4. Continually fine-tune the latest checkpoint on the new dataset, compare against both the baseline and the fresh fine-tune, and record whether continual learning improved results.
 - To skip long CLI commands, edit `configs/finetune.yaml` with your preferred model/checkpoint paths and simply run `python scripts/finetune_transformer.py`; the script auto-loads that config (or pass `--config path/to/file.yaml` for alternates).
 
 ## Dataset
