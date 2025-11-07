@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
+import pickle
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import Dataset
 from transformers import (
@@ -203,6 +204,16 @@ def parse_args() -> argparse.Namespace:
 
 def load_gene_vocab(path: Path) -> pd.Series:
     """Load a TSV vocabulary (gene_symbol -> token_id)."""
+    if path.suffix.lower() in {".pkl", ".pickle"}:
+        with path.open("rb") as fh:
+            obj = pickle.load(fh)
+        if isinstance(obj, dict):
+            series = pd.Series(obj, name="token_id")
+        else:
+            raise ValueError(f"{path} must contain a dict mapping gene names to token ids.")
+        series.index.name = "gene_symbol"
+        return series.astype(int)
+
     df = pd.read_csv(path, sep="\t")
     if len(df.columns) == 1:
         raise ValueError(f"{path} must contain at least two columns (gene symbol + token id).")
