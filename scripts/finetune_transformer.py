@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pickle
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -19,7 +20,6 @@ import numpy as np
 import pandas as pd
 import torch
 import yaml
-import pickle
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import Dataset
 from transformers import (
@@ -32,7 +32,7 @@ from transformers import (
 )
 
 DEFAULT_CONFIG_PATH = Path("configs/finetune.yaml")
-PATH_FIELDS = {"tokens_dir", "model_vocab", "output_dir", "config"}
+PATH_FIELDS = {"tokens_dir", "model_vocab", "model_gene_name_dict", "output_dir", "config"}
 FALLBACK_DEFAULTS = {
     "tokens_dir": Path("gse144735/processed/tokens"),
     "output_dir": Path("outputs/transformer_finetune"),
@@ -75,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Optional TSV file mapping gene symbols to token ids for the pretrained model. "
         "Provide this when dataset tokens need to be realigned to the model vocabulary.",
+    )
+    parser.add_argument(
+        "--model-gene-name-dict",
+        type=Path,
+        help="Optional pickle/TSV mapping of gene symbols to the pretrained model's gene identifiers "
+        "(e.g., Geneformer's gene_name_id_dict) to improve remapping coverage.",
     )
     parser.add_argument(
         "--output-dir",
@@ -224,28 +230,84 @@ def load_gene_vocab(path: Path) -> pd.Series:
     return series
 
 
+def load_gene_name_dict(path: Path) -> Dict[str, str]:
+    """Load a mapping from gene symbols to model-specific gene identifiers."""
+    if path.suffix.lower() in {".pkl", ".pickle"}:
+        with path.open("rb") as fh:
+            obj = pickle.load(fh)
+    else:
+        df = pd.read_csv(path, sep="\t", header=None, names=["gene_symbol", "gene_id"])
+        obj = dict(zip(df["gene_symbol"], df["gene_id"]))
+
+    if not isinstance(obj, dict):
+        raise ValueError(f"{path} must contain a mapping (dict) object.")
+
+    mapping: Dict[str, str] = {}
+
+    def canonical(value: str) -> str:
+        return str(value).strip().upper()
+
+    for key, value in obj.items():
+        if value is None:
+            continue
+        key_norm = canonical(key)
+        if isinstance(value, (list, tuple, set)):
+            for candidate in value:
+                if candidate:
+                    mapping[key_norm] = canonical(candidate)
+                    break
+        else:
+            mapping[key_norm] = canonical(value)
+    return mapping
+
+
 def build_vocab_remap(
     dataset_vocab: pd.Series,
     model_vocab: pd.Series,
     pad_fill_value: int,
     pad_token_id: int,
     unknown_token_id: int,
+    gene_name_map: Optional[Dict[str, str]] = None,
 ) -> np.ndarray:
     """Create an array that maps dataset token ids to model token ids."""
     max_dataset_id = int(dataset_vocab.max())
     remap = np.full(max_dataset_id + 2, fill_value=unknown_token_id, dtype=np.int64)
-    model_lookup = model_vocab.to_dict()
+    gene_name_map = gene_name_map or {}
+
+    def canonical(value: str) -> str:
+        return str(value).strip().upper()
+
+    model_lookup = {canonical(idx): int(val) for idx, val in model_vocab.items()}
+    alias_lookup = {canonical(k): canonical(v) for k, v in gene_name_map.items()}
+
     missing = 0
+    direct_matches = 0
+    alias_matches = 0
     for gene_symbol, dataset_id in dataset_vocab.items():
-        model_id = model_lookup.get(gene_symbol)
+        key = canonical(gene_symbol)
+        model_id = model_lookup.get(key)
+        if model_id is None:
+            alias = alias_lookup.get(key)
+            if alias:
+                model_id = model_lookup.get(alias)
+                if model_id is not None:
+                    alias_matches += 1
+        else:
+            direct_matches += 1
+
         if model_id is None:
             missing += 1
             continue
         remap[int(dataset_id)] = int(model_id)
+
+    matched = direct_matches + alias_matches
+    total = len(dataset_vocab)
+    if total:
+        print(
+            f"[remap] matched {matched} genes ({direct_matches} direct, "
+            f"{alias_matches} via gene_name map); missing {missing} ({missing/total:.1%})."
+        )
     remap[pad_fill_value] = pad_token_id
-    if missing:
-        rate = missing / len(dataset_vocab)
-        print(f"[warn] {missing} / {len(dataset_vocab)} genes ({rate:.1%}) missing from model vocab; mapped to unknown_token_id={unknown_token_id}.")
     return remap
 
 
@@ -345,6 +407,10 @@ def main() -> None:
     dataset_vocab = load_gene_vocab(dataset_vocab_path)
     dataset_pad_fill_value = int(dataset_vocab.max()) + 1
 
+    gene_name_dict = None
+    if args.model_gene_name_dict:
+        gene_name_dict = load_gene_name_dict(args.model_gene_name_dict)
+
     config = AutoConfig.from_pretrained(
         args.model_name_or_path,
         num_labels=len(id2label),
@@ -367,6 +433,7 @@ def main() -> None:
             pad_fill_value=dataset_pad_fill_value,
             pad_token_id=model_pad_token_id,
             unknown_token_id=unknown_token_id,
+            gene_name_map=gene_name_dict,
         )
         pad_fill_value = dataset_pad_fill_value
     else:

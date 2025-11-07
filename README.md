@@ -44,7 +44,7 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
     --output-dir outputs/geneformer_finetune
   ```
 - The script writes validation/test metrics to `metrics.json` inside the output directory and saves the best checkpoint for downstream analysis.
-- `model_vocab` in `configs/finetune.yaml` can point to either a TSV (gene symbol -> token id) or Geneformer's pickled `token_dictionary_gc104M.pkl`; the script auto-detects the format and remaps dataset genes accordingly.
+- `model_vocab` in `configs/finetune.yaml` can point to either a TSV (gene symbol -> token id) or Geneformer's pickled `token_dictionary_gc104M.pkl`; the script auto-detects the format and remaps dataset genes accordingly. Provide `model_gene_name_dict` (e.g., Geneformer's `gene_name_id_dict_gc104M.pkl`) so symbols can be translated to the pretrained model's identifiers when a direct lookup is missing.
 - To skip long CLI commands, edit `configs/finetune.yaml` with your preferred model/checkpoint paths and simply run `python scripts/finetune_transformer.py`; the script auto-loads that config (or pass `--config path/to/file.yaml` for alternates).
 
 ## Dataset
