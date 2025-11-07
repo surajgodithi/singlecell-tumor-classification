@@ -44,6 +44,7 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
     --output-dir outputs/geneformer_finetune
   ```
 - The script writes validation/test metrics to `metrics.json` inside the output directory and saves the best checkpoint for downstream analysis.
+- To skip long CLI commands, edit `configs/finetune.yaml` with your preferred model/checkpoint paths and simply run `python scripts/finetune_transformer.py`; the script auto-loads that config (or pass `--config path/to/file.yaml` for alternates).
 
 ## Dataset
 

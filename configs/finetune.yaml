@@ -1,0 +1,12 @@
+model_name_or_path: geneformer/geneformer
+model_vocab: /content/drive/MyDrive/geneformer/gene_vocab.tsv
+tokens_dir: gse144735/processed/tokens
+output_dir: outputs/geneformer_colon
+max_length: 2048
+num_epochs: 3
+train_batch_size: 8
+eval_batch_size: 8
+learning_rate: 5.0e-5
+weight_decay: 0.01
+patience: 2
+seed: 42
