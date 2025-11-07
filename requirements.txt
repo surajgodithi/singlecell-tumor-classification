@@ -11,3 +11,4 @@ pyarrow==16.1.0
 torch>=2.2.0
 transformers==4.46.3
 pyyaml==6.0.2
+ml-dtypes==0.4.0
