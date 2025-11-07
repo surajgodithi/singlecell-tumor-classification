@@ -406,8 +406,25 @@ def resolve_model_path(model_path: Path) -> Path:
             relative_candidate = (model_path / candidate).resolve()
             if relative_candidate.exists():
                 print(f"[eval] Using best checkpoint (relative) from trainer_state.json: {relative_candidate}")
-                return relative_candidate
+                    return relative_candidate
             print(f"[warn] Stored best checkpoint path {best_ckpt} not found; falling back to model_path.")
+    if model_path.is_dir():
+        config_file = model_path / "config.json"
+        if config_file.exists():
+            return model_path
+        def checkpoint_order(p: Path) -> int:
+            tail = p.name.split("-")[-1]
+            return int(tail) if tail.isdigit() else -1
+
+        checkpoints = sorted((p for p in model_path.glob("checkpoint-*") if p.is_dir()), key=checkpoint_order)
+        if checkpoints:
+            chosen = checkpoints[-1]
+            print(f"[eval] No trainer_state.json found; selecting latest checkpoint: {chosen}")
+            return chosen
+        raise FileNotFoundError(
+            f"No config.json or checkpoint-* directories found under {model_path}. "
+            "Please point model_path to a specific checkpoint."
+        )
     return model_path
 
 
