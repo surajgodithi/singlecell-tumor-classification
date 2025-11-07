@@ -394,6 +394,16 @@ def evaluate_split(trainer: Trainer, dataset: Dataset, human_name: str, classes:
 
 def resolve_model_path(model_path: Path) -> Path:
     """If model_path points to a run directory, pick the best available checkpoint."""
+    best_file = model_path / "best_checkpoint.txt"
+    if best_file.exists():
+        best_ref = best_file.read_text().strip()
+        candidate = Path(best_ref)
+        if not candidate.is_absolute():
+            candidate = (model_path / candidate).resolve()
+        if candidate.exists():
+            print(f"[eval] Using checkpoint from best_checkpoint.txt: {candidate}")
+            return candidate
+        print(f"[warn] Path in best_checkpoint.txt ({best_ref}) not found; falling back to latest checkpoint.")
     if model_path.is_dir():
         config_file = model_path / "config.json"
         if config_file.exists():

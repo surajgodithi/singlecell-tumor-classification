@@ -485,6 +485,12 @@ def main() -> None:
     )
 
     trainer.train()
+    best_checkpoint = trainer.state.best_model_checkpoint
+    if best_checkpoint:
+        best_path = Path(best_checkpoint)
+        record_path = args.output_dir / "best_checkpoint.txt"
+        record_path.write_text(str(best_path.resolve()))
+        print(f"Best checkpoint recorded at {record_path}: {best_path}")
     val_metrics = trainer.evaluate(eval_dataset=val_dataset)
     test_metrics = trainer.evaluate(eval_dataset=test_dataset)
 
