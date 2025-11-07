@@ -1,4 +1,4 @@
-model_name_or_path: geneformer/geneformer
+model_name_or_path: ctheodoris/Geneformer
 model_vocab: /content/drive/MyDrive/geneformer/gene_vocab.tsv
 tokens_dir: gse144735/processed/tokens
 output_dir: outputs/geneformer_colon
