@@ -53,7 +53,7 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
   4. Continually fine-tune the latest checkpoint on the new dataset, compare against both the baseline and the fresh fine-tune, and record whether continual learning improved results.
 - To skip long CLI commands, edit `configs/finetune.yaml` with your preferred model/checkpoint paths and simply run `python scripts/finetune_transformer.py`; the script auto-loads that config (or pass `--config path/to/file.yaml` for alternates).
 - **Checkpoint Evaluation** (`scripts/evaluate_transformer.py`)
-  - After training, quickly evaluate val/test splits (and capture per-class precision/recall/F1) by pointing the script at your tokens directory and checkpoint:
+  - After training, quickly evaluate val/test splits (and capture per-class precision/recall/F1) either by editing `configs/eval.yaml` and running `python scripts/evaluate_transformer.py`, or by specifying paths explicitly:
     ```bash
     python scripts/evaluate_transformer.py \
       --tokens-dir gse144735/processed/tokens \

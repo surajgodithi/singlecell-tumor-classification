@@ -21,6 +21,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import Dataset
 from transformers import (
@@ -30,27 +31,51 @@ from transformers import (
     TrainingArguments,
 )
 
+DEFAULT_CONFIG_PATH = Path("configs/eval.yaml")
+PATH_FIELDS = {
+    "tokens_dir",
+    "model_path",
+    "model_vocab",
+    "model_gene_name_dict",
+    "output_json",
+    "config",
+}
+FALLBACK_DEFAULTS = {
+    "tokens_dir": Path("gse144735/processed/tokens"),
+    "max_length": 2048,
+    "output_json": Path("outputs/eval_metrics.json"),
+    "eval_splits": ["val", "test"],
+    "eval_batch_size": 8,
+    "label_column": "Class",
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate a fine-tuned transformer checkpoint on the donor splits."
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        help="Optional YAML config (default: configs/eval.yaml when present).",
+    )
+    parser.add_argument(
         "--tokens-dir",
         type=Path,
-        default=Path("gse144735/processed/tokens"),
+        default=None,
         help="Directory containing gene_vocab.tsv (or pickle), *_gene_rank_tokens.npz, *_tokens_metadata.tsv, splits_by_patient.npz.",
     )
     parser.add_argument(
         "--model-path",
         type=Path,
-        required=True,
+        default=None,
         help="Path to the fine-tuned model checkpoint directory (e.g., outputs/.../best-model).",
     )
     parser.add_argument(
         "--model-vocab",
         type=Path,
-        required=True,
+        default=None,
         help="Path to the pretrained model's vocabulary (TSV or Geneformer pickle).",
     )
     parser.add_argument(
@@ -61,35 +86,81 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--label-column",
         type=str,
-        default="Class",
+        default=None,
         help="Metadata column containing labels.",
     )
     parser.add_argument(
         "--max-length",
         type=int,
-        default=2048,
+        default=None,
         help="Maximum ranked genes per cell (should equal training).",
     )
     parser.add_argument(
         "--output-json",
         type=Path,
-        default=Path("outputs/eval_metrics.json"),
+        default=None,
         help="Where to write the final metrics JSON.",
     )
     parser.add_argument(
         "--eval-splits",
         nargs="+",
         choices=["train", "val", "test"],
-        default=["val", "test"],
+        default=None,
         help="Which splits to evaluate (default val and test).",
     )
     parser.add_argument(
         "--eval-batch-size",
         type=int,
-        default=8,
+        default=None,
         help="Per-device eval batch size.",
     )
     return parser
+
+
+def load_config(path: Path) -> Dict[str, object]:
+    if not path.exists():
+        raise FileNotFoundError(f"Config file {path} not found.")
+    data = yaml.safe_load(path.read_text())
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file {path} must contain a top-level mapping.")
+    return data
+
+
+def parse_args() -> argparse.Namespace:
+    parser = build_parser()
+    preliminary = parser.parse_known_args()[0]
+    config_path = preliminary.config or (DEFAULT_CONFIG_PATH if DEFAULT_CONFIG_PATH.exists() else None)
+    config_data: Dict[str, object] = load_config(config_path) if config_path else {}
+
+    args = parser.parse_args()
+    args_dict = vars(args)
+
+    if config_data:
+        print(f"Loaded config: {config_path}")
+        for key, value in config_data.items():
+            if key not in args_dict:
+                print(f"[warn] Unknown config key '{key}' - ignoring.")
+                continue
+            if args_dict[key] is None:
+                args_dict[key] = value
+
+    for key, value in FALLBACK_DEFAULTS.items():
+        if args_dict.get(key) is None:
+            args_dict[key] = value
+
+    for field in PATH_FIELDS:
+        value = args_dict.get(field)
+        if value is not None and not isinstance(value, Path):
+            args_dict[field] = Path(value)
+
+    missing = [field for field in ["model_path", "model_vocab"] if args_dict.get(field) is None]
+    if missing:
+        raise SystemExit(f"Missing required argument(s): {', '.join(missing)}. Provide via CLI or config.")
+
+    args.config_path = str(config_path) if config_path else None
+    return args
 
 
 def load_gene_vocab(path: Path) -> pd.Series:
@@ -322,8 +393,7 @@ def evaluate_split(trainer: Trainer, dataset: Dataset, human_name: str, classes:
 
 
 def main() -> None:
-    parser = build_parser()
-    args = parser.parse_args()
+    args = parse_args()
 
     tokens_npz = np.load(args.tokens_dir / "gse144735_gene_rank_tokens.npz")
     tokens = tokens_npz["tokens"]
@@ -340,7 +410,7 @@ def main() -> None:
     model_vocab = load_gene_vocab(args.model_vocab)
     gene_name_dict = load_gene_name_dict(args.model_gene_name_dict) if args.model_gene_name_dict else None
 
-    config = AutoConfig.from_pretrained(args.model_path)
+    config = AutoConfig.from_pretrained(str(args.model_path))
     labels_encoded, id2label_map, label2id_map = align_labels_with_config(metadata[args.label_column], config)
     classes = [id2label_map[idx] for idx in sorted(id2label_map)]
 
@@ -359,7 +429,7 @@ def main() -> None:
     )
     pad_fill_value = dataset_pad_fill_value
 
-    model = AutoModelForSequenceClassification.from_pretrained(args.model_path, config=config)
+    model = AutoModelForSequenceClassification.from_pretrained(str(args.model_path), config=config)
     training_args = TrainingArguments(
         output_dir=str(args.model_path / "eval_tmp"),
         per_device_eval_batch_size=args.eval_batch_size,
