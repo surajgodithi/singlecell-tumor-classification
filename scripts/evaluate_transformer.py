@@ -393,21 +393,7 @@ def evaluate_split(trainer: Trainer, dataset: Dataset, human_name: str, classes:
 
 
 def resolve_model_path(model_path: Path) -> Path:
-    """If model_path is a directory containing trainer_state.json, return the best checkpoint path."""
-    if (model_path / "trainer_state.json").exists():
-        state = json.loads((model_path / "trainer_state.json").read_text())
-        best_ckpt = state.get("best_model_checkpoint")
-        if best_ckpt:
-            candidate = Path(best_ckpt)
-            if candidate.exists():
-                print(f"[eval] Using best checkpoint from trainer_state.json: {candidate}")
-                return candidate
-            # try relative to the parent directory if the stored path was relative
-            relative_candidate = (model_path / candidate).resolve()
-            if relative_candidate.exists():
-                print(f"[eval] Using best checkpoint (relative) from trainer_state.json: {relative_candidate}")
-                return relative_candidate
-            print(f"[warn] Stored best checkpoint path {best_ckpt} not found; falling back to model_path.")
+    """If model_path points to a run directory, pick the best available checkpoint."""
     if model_path.is_dir():
         config_file = model_path / "config.json"
         if config_file.exists():
@@ -419,7 +405,7 @@ def resolve_model_path(model_path: Path) -> Path:
         checkpoints = sorted((p for p in model_path.glob("checkpoint-*") if p.is_dir()), key=checkpoint_order)
         if checkpoints:
             chosen = checkpoints[-1]
-            print(f"[eval] No trainer_state.json found; selecting latest checkpoint: {chosen}")
+            print(f"[eval] Selecting latest checkpoint under {model_path}: {chosen}")
             return chosen
         raise FileNotFoundError(
             f"No config.json or checkpoint-* directories found under {model_path}. "
