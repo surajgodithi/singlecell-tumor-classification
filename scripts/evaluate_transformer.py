@@ -406,7 +406,7 @@ def resolve_model_path(model_path: Path) -> Path:
             relative_candidate = (model_path / candidate).resolve()
             if relative_candidate.exists():
                 print(f"[eval] Using best checkpoint (relative) from trainer_state.json: {relative_candidate}")
-                    return relative_candidate
+                return relative_candidate
             print(f"[warn] Stored best checkpoint path {best_ckpt} not found; falling back to model_path.")
     if model_path.is_dir():
         config_file = model_path / "config.json"
