@@ -37,11 +37,12 @@ FALLBACK_DEFAULTS = {
     "tokens_dir": Path("gse144735/processed/tokens"),
     "output_dir": Path("outputs/transformer_finetune"),
     "max_length": 2048,
-    "learning_rate": 5e-5,
+    "learning_rate": 2e-5,
     "weight_decay": 0.01,
     "num_epochs": 5,
     "train_batch_size": 8,
     "eval_batch_size": 8,
+    "gradient_accumulation_steps": 1,
     "seed": 42,
     "patience": 2,
     "label_column": "Class",
@@ -125,6 +126,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Per-device eval batch size.",
     )
     parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=None,
+        help="How many steps to accumulate gradients before updating weights. "
+        "Keeps memory bounded on large batches (default: 1).",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -195,6 +203,9 @@ def parse_args() -> argparse.Namespace:
     for key, value in FALLBACK_DEFAULTS.items():
         if args_dict.get(key) is None:
             args_dict[key] = value
+
+    if args_dict["gradient_accumulation_steps"] < 1:
+        raise ValueError("--gradient-accumulation-steps must be >= 1.")
 
     for field in PATH_FIELDS:
         value = args_dict.get(field)
@@ -458,6 +469,7 @@ def main() -> None:
         output_dir=str(args.output_dir),
         per_device_train_batch_size=args.train_batch_size,
         per_device_eval_batch_size=args.eval_batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_train_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,

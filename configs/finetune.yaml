@@ -4,10 +4,11 @@ model_gene_name_dict: /content/Geneformer/geneformer/gene_name_id_dict_gc104M.pk
 tokens_dir: gse144735/processed/tokens
 output_dir: outputs/geneformer_colon
 max_length: 2048
-num_epochs: 3
+num_epochs: 8
 train_batch_size: 8
 eval_batch_size: 8
-learning_rate: 5.0e-5
+gradient_accumulation_steps: 4
+learning_rate: 2.0e-5
 weight_decay: 0.01
-patience: 2
+patience: 3
 seed: 42
