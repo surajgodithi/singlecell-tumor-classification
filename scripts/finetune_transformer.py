@@ -180,7 +180,7 @@ def parse_args() -> argparse.Namespace:
         print(f"Loaded config: {config_path}")
         for key, value in config_data.items():
             if key not in args_dict:
-                print(f"[warn] Unknown config key '{key}' – ignoring.")
+                print(f"[warn] Unknown config key '{key}' - ignoring.")
                 continue
             if args_dict[key] is None:
                 args_dict[key] = value
