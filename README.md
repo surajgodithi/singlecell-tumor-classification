@@ -1,6 +1,6 @@
-# Geneformer Tumor Classification
+﻿# Single-Cell Tumor Classification
 
-Fine-tuning single-cell foundation models (Geneformer or scGPT) to classify tumor vs. normal cells using colorectal cancer scRNA-seq data (GSE144735).
+This project starts by fine-tuning single-cell foundation transformers to separate tumor from normal cells in colorectal cancer (GSE144735), with the long-term goal of extending to additional cancers.
 
 ## Quick Start
 
@@ -33,7 +33,17 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
 
 ### 3. Model Training
 
-Coming soon - transformer fine-tuning pipeline
+**Transformer Fine-tuning** (`scripts/finetune_transformer.py`)
+- Wraps Hugging Face `Trainer` to fine-tune a pretrained single-cell transformer (e.g., `geneformer/geneformer`) on the ranked tokens.
+- Accepts the NPZ tokens, metadata labels, and donor-wise splits generated in the earlier notebooks.
+- Example:
+  ```bash
+  python scripts/finetune_transformer.py \
+    --model-name-or-path geneformer/geneformer \
+    --model-vocab /path/to/geneformer_gene_vocab.tsv \
+    --output-dir outputs/geneformer_finetune
+  ```
+- The script writes validation/test metrics to `metrics.json` inside the output directory and saves the best checkpoint for downstream analysis.
 
 ## Dataset
 
@@ -46,10 +56,10 @@ Coming soon - transformer fine-tuning pipeline
 
 ```
 gse144735/
-├── raw/              # Downloaded GEO files
-└── processed/
-    ├── *.h5ad        # Filtered AnnData objects
-    └── tokens/       # Tokenized data and splits
+â”œâ”€â”€ raw/              # Downloaded GEO files
+â””â”€â”€ processed/
+    â”œâ”€â”€ *.h5ad        # Filtered AnnData objects
+    â””â”€â”€ tokens/       # Tokenized data and splits
 notebooks/            # Analysis workflows
 ```
 
@@ -58,3 +68,5 @@ notebooks/            # Analysis workflows
 - The tokenization uses a vocabulary of 24,471 genes
 - Each cell is represented by up to 2,048 top-expressed genes
 - All splits are patient-wise to ensure generalization
+
+
