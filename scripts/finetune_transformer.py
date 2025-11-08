@@ -19,6 +19,7 @@ from typing import Dict, Iterable, Optional
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 import yaml
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torch.utils.data import Dataset
@@ -43,6 +44,10 @@ FALLBACK_DEFAULTS = {
     "train_batch_size": 8,
     "eval_batch_size": 8,
     "gradient_accumulation_steps": 1,
+    "class_weights": None,
+    "token_mask_prob": 0.0,
+    "mixup_prob": 0.0,
+    "mixup_alpha": 0.4,
     "seed": 42,
     "patience": 2,
     "label_column": "Class",
@@ -133,6 +138,37 @@ def build_parser() -> argparse.ArgumentParser:
         "Keeps memory bounded on large batches (default: 1).",
     )
     parser.add_argument(
+        "--class-weights",
+        type=str,
+        default=None,
+        help="JSON object mapping class labels to loss weights (e.g., "
+        '\'{"Normal": 1.0, "Tumor": 2.0}\'). When using the YAML config, this can be specified as a dict.',
+    )
+    parser.add_argument(
+        "--token-mask-prob",
+        type=float,
+        default=None,
+        help="Probability of masking each non-pad token during training to improve robustness.",
+    )
+    parser.add_argument(
+        "--mixup-prob",
+        type=float,
+        default=None,
+        help="Probability of applying mixup-style token swapping for each training example.",
+    )
+    parser.add_argument(
+        "--mixup-alpha",
+        type=float,
+        default=None,
+        help="Beta distribution parameter controlling mixup intensity (higher = milder swaps).",
+    )
+    parser.add_argument(
+        "--mask-token-id",
+        type=int,
+        default=None,
+        help="Optional token id to use when masking tokens. Defaults to the model pad token id.",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=None,
@@ -217,6 +253,26 @@ def parse_args() -> argparse.Namespace:
 
     args.config_path = str(config_path) if config_path else None
     return args
+
+
+def resolve_class_weights(raw_value, label2id: Dict[str, int]) -> Optional[torch.Tensor]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, str):
+        try:
+            mapping = json.loads(raw_value)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Failed to parse class_weights JSON: {raw_value}") from exc
+    elif isinstance(raw_value, dict):
+        mapping = raw_value
+    else:
+        raise ValueError("class_weights must be a dict or JSON string mapping labels to weights.")
+    weights = torch.ones(len(label2id), dtype=torch.float32)
+    for label, weight in mapping.items():
+        if label not in label2id:
+            raise KeyError(f"class_weights references unknown label '{label}'.")
+        weights[label2id[label]] = float(weight)
+    return weights
 
 
 def load_gene_vocab(path: Path) -> pd.Series:
@@ -333,6 +389,12 @@ class RankedGeneDataset(Dataset):
         pad_fill_value: int,
         max_length: int,
         remap: Optional[np.ndarray] = None,
+        token_mask_prob: float = 0.0,
+        mask_token_id: Optional[int] = None,
+        mixup_prob: float = 0.0,
+        mixup_alpha: float = 0.4,
+        num_labels: Optional[int] = None,
+        rng_seed: Optional[int] = None,
     ) -> None:
         self.tokens = tokens
         self.indices = indices
@@ -340,23 +402,151 @@ class RankedGeneDataset(Dataset):
         self.pad_fill_value = pad_fill_value
         self.max_length = max_length
         self.remap = remap
+        self.token_mask_prob = token_mask_prob
+        self.mask_token_id = mask_token_id if mask_token_id is not None else pad_fill_value
+        self.mixup_prob = mixup_prob
+        self.mixup_alpha = mixup_alpha
+        self.num_labels = num_labels
+        self.rng = np.random.default_rng(rng_seed)
 
     def __len__(self) -> int:
         return len(self.indices)
 
-    def __getitem__(self, position: int) -> Dict[str, torch.Tensor]:
-        idx = self.indices[position]
+    def _load_sequence(self, idx: int) -> tuple[np.ndarray, np.ndarray]:
         seq = self.tokens[idx, : self.max_length].astype(np.int64).copy()
         mask = seq != -1
         seq[~mask] = self.pad_fill_value
         if self.remap is not None:
             seq = self.remap[seq]
-        attn_mask = mask.astype(np.int64)
-        return {
+        return seq, mask.astype(np.int64)
+
+    def _apply_token_mask(self, seq: np.ndarray, attn_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        if self.token_mask_prob <= 0:
+            return seq, attn_mask
+        real_positions = np.where(attn_mask == 1)[0]
+        if real_positions.size == 0:
+            return seq, attn_mask
+        drop_flags = self.rng.random(real_positions.size) < self.token_mask_prob
+        if not drop_flags.any():
+            return seq, attn_mask
+        to_mask = real_positions[drop_flags]
+        seq[to_mask] = self.mask_token_id
+        # Keep attention = 1 so the transformer still attends to the masked token.
+        return seq, attn_mask
+
+    def _mix_sequences(
+        self,
+        primary_seq: np.ndarray,
+        primary_mask: np.ndarray,
+        partner_seq: np.ndarray,
+        partner_mask: np.ndarray,
+        lam: float,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
+        if primary_seq.shape != partner_seq.shape:
+            raise ValueError("Mixup sequences must have matching shapes.")
+        swap_mask = self.rng.random(primary_seq.shape[0]) > lam
+        mixed_seq = primary_seq.copy()
+        mixed_mask = primary_mask.copy()
+        mixed_seq[swap_mask] = partner_seq[swap_mask]
+        mixed_mask[swap_mask] = partner_mask[swap_mask]
+        valid = (primary_mask == 1) | (partner_mask == 1)
+        if valid.any():
+            contrib = np.logical_not(swap_mask) & valid
+            lam_eff = contrib.sum() / valid.sum()
+        else:
+            lam_eff = lam
+        return mixed_seq, mixed_mask, float(lam_eff)
+
+    def __getitem__(self, position: int) -> Dict[str, torch.Tensor]:
+        idx = self.indices[position]
+        seq, attn_mask = self._load_sequence(idx)
+        soft_labels = None
+        if (
+            self.mixup_prob > 0
+            and self.mixup_alpha > 0
+            and self.num_labels is not None
+            and self.rng.random() < self.mixup_prob
+            and len(self.indices) > 1
+        ):
+            partner_pos = self.rng.integers(0, len(self.indices))
+            if partner_pos == position:
+                partner_pos = (partner_pos + 1) % len(self.indices)
+            partner_idx = self.indices[partner_pos]
+            partner_seq, partner_mask = self._load_sequence(partner_idx)
+            lam = float(self.rng.beta(self.mixup_alpha, self.mixup_alpha))
+            seq, attn_mask, lam = self._mix_sequences(seq, attn_mask, partner_seq, partner_mask, lam)
+            soft = np.zeros(self.num_labels, dtype=np.float32)
+            soft[self.labels[idx]] += lam
+            soft[self.labels[partner_idx]] += 1.0 - lam
+            soft_labels = soft
+        seq, attn_mask = self._apply_token_mask(seq, attn_mask)
+        item = {
             "input_ids": torch.from_numpy(seq),
             "attention_mask": torch.from_numpy(attn_mask),
             "labels": torch.tensor(self.labels[idx], dtype=torch.long),
         }
+        if soft_labels is not None:
+            item["soft_labels"] = torch.from_numpy(soft_labels)
+        return item
+
+
+class RankedGeneCollator:
+    """Custom collator that stacks tensors and keeps optional soft labels."""
+
+    def __init__(self, num_labels: int):
+        self.num_labels = num_labels
+
+    def __call__(self, batch: Iterable[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        batch = list(batch)
+        input_ids = torch.stack([item["input_ids"] for item in batch])
+        attention_mask = torch.stack([item["attention_mask"] for item in batch])
+        labels = torch.stack([item["labels"] for item in batch])
+        features: Dict[str, torch.Tensor] = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+        }
+        if any("soft_labels" in item for item in batch):
+            soft_vectors = []
+            for item in batch:
+                if "soft_labels" in item:
+                    soft_vectors.append(item["soft_labels"])
+                else:
+                    vec = torch.zeros(self.num_labels, dtype=torch.float32)
+                    vec[int(item["labels"])] = 1.0
+                    soft_vectors.append(vec)
+            features["soft_labels"] = torch.stack(soft_vectors)
+        return features
+
+
+class RankedGeneTrainer(Trainer):
+    """Trainer subclass that supports class-weighted losses and soft labels."""
+
+    def __init__(self, *args, class_weights: Optional[torch.Tensor] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.class_weights = class_weights
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        soft_labels = inputs.pop("soft_labels", None)
+        outputs = model(**inputs)
+        logits = outputs.logits
+        labels = inputs.get("labels")
+        if soft_labels is not None:
+            target = soft_labels.to(logits.device)
+            if self.class_weights is not None:
+                weight = self.class_weights.to(logits.device)
+                target = target * weight
+                target = target / target.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+            log_probs = F.log_softmax(logits, dim=-1)
+            loss = -(target * log_probs).sum(dim=-1).mean()
+        else:
+            if self.class_weights is not None:
+                loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
+            else:
+                loss_fct = torch.nn.CrossEntropyLoss()
+            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        return (loss, outputs) if return_outputs else loss
 
 
 def compute_metrics(eval_pred):
@@ -434,6 +624,7 @@ def main() -> None:
     if model_pad_token_id is None:
         raise ValueError("Pad token id is undefined. Provide --model-pad-token-id or use a model with pad_token_id set.")
     unknown_token_id = args.unknown_token_id if args.unknown_token_id is not None else model_pad_token_id
+    mask_token_id = args.mask_token_id if args.mask_token_id is not None else model_pad_token_id
 
     remap = None
     if args.model_vocab:
@@ -461,9 +652,45 @@ def main() -> None:
         config=config,
     )
 
-    train_dataset = RankedGeneDataset(tokens, train_idx, encoded_labels, pad_fill_value, args.max_length, remap)
-    val_dataset = RankedGeneDataset(tokens, val_idx, encoded_labels, pad_fill_value, args.max_length, remap)
-    test_dataset = RankedGeneDataset(tokens, test_idx, encoded_labels, pad_fill_value, args.max_length, remap)
+    class_weights = resolve_class_weights(args.class_weights, label2id)
+    num_labels = len(id2label)
+    train_dataset = RankedGeneDataset(
+        tokens,
+        train_idx,
+        encoded_labels,
+        pad_fill_value,
+        args.max_length,
+        remap,
+        token_mask_prob=args.token_mask_prob,
+        mask_token_id=mask_token_id,
+        mixup_prob=args.mixup_prob,
+        mixup_alpha=args.mixup_alpha,
+        num_labels=num_labels,
+        rng_seed=args.seed,
+    )
+    val_dataset = RankedGeneDataset(
+        tokens,
+        val_idx,
+        encoded_labels,
+        pad_fill_value,
+        args.max_length,
+        remap,
+        token_mask_prob=0.0,
+        mixup_prob=0.0,
+        num_labels=num_labels,
+    )
+    test_dataset = RankedGeneDataset(
+        tokens,
+        test_idx,
+        encoded_labels,
+        pad_fill_value,
+        args.max_length,
+        remap,
+        token_mask_prob=0.0,
+        mixup_prob=0.0,
+        num_labels=num_labels,
+    )
+    data_collator = RankedGeneCollator(num_labels=num_labels)
 
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
@@ -487,13 +714,15 @@ def main() -> None:
     if args.patience > 0:
         callbacks.append(EarlyStoppingCallback(early_stopping_patience=args.patience))
 
-    trainer = Trainer(
+    trainer = RankedGeneTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
+        data_collator=data_collator,
         compute_metrics=compute_metrics,
         callbacks=callbacks,
+        class_weights=class_weights,
     )
 
     trainer.train()
