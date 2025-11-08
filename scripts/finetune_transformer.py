@@ -526,7 +526,7 @@ class RankedGeneTrainer(Trainer):
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         soft_labels = inputs.pop("soft_labels", None)
         outputs = model(**inputs)
         logits = outputs.logits
