@@ -22,7 +22,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from torch.utils.data import Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from transformers import (
     AutoConfig,
     AutoModelForSequenceClassification,
@@ -51,6 +51,8 @@ FALLBACK_DEFAULTS = {
     "seed": 42,
     "patience": 2,
     "label_column": "Class",
+    "balance_strategy": "none",
+    "focal_gamma": 0.0,
 }
 
 
@@ -198,6 +200,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Metadata column to predict (defaults to Tumor/Border/Normal classes).",
+    )
+    parser.add_argument(
+        "--balance-strategy",
+        type=str,
+        choices=["none", "class", "class_donor"],
+        default=None,
+        help="Optional weighted sampling strategy for the training set.",
+    )
+    parser.add_argument(
+        "--focal-gamma",
+        type=float,
+        default=None,
+        help="Focal-loss gamma parameter. Set >0 to enable focal loss for hard-label batches.",
     )
     return parser
 
@@ -378,6 +393,39 @@ def build_vocab_remap(
     return remap
 
 
+def build_sample_weights(
+    indices: np.ndarray,
+    metadata: pd.DataFrame,
+    label_column: str,
+    strategy: str,
+    patient_column: str = "Patient",
+) -> Optional[np.ndarray]:
+    """Create per-sample weights for weighted sampling."""
+    if strategy == "none":
+        return None
+    subset = metadata.iloc[indices].copy()
+    if subset.empty:
+        return None
+    if strategy == "class":
+        counts = subset[label_column].value_counts()
+        weights = subset[label_column].map(lambda label: 1.0 / counts[label])
+    elif strategy == "class_donor":
+        if patient_column not in subset.columns:
+            raise KeyError(
+                f"balance strategy '{strategy}' requires '{patient_column}' column in metadata."
+            )
+        counts = subset.groupby([patient_column, label_column]).size()
+        weights = subset.apply(
+            lambda row: 1.0 / counts[(row[patient_column], row[label_column])], axis=1
+        )
+    else:
+        raise ValueError(f"Unknown balance strategy: {strategy}")
+    weights = weights.to_numpy(dtype=np.float32)
+    # Normalise for logging clarity; WeightedRandomSampler only needs relative magnitudes.
+    weights = weights / weights.mean()
+    return weights
+
+
 class RankedGeneDataset(Dataset):
     """Torch dataset that surfaces ranked gene tokens with attention masks."""
 
@@ -520,11 +568,41 @@ class RankedGeneCollator:
 
 
 class RankedGeneTrainer(Trainer):
-    """Trainer subclass that supports class-weighted losses and soft labels."""
+    """Trainer subclass that supports class-weighted losses, focal loss, and soft labels."""
 
-    def __init__(self, *args, class_weights: Optional[torch.Tensor] = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        class_weights: Optional[torch.Tensor] = None,
+        sampler_weights: Optional[np.ndarray] = None,
+        focal_gamma: float = 0.0,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self.class_weights = class_weights
+        self.sampler_weights = sampler_weights
+        self.focal_gamma = focal_gamma
+
+    def get_train_dataloader(self):
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+        if self.sampler_weights is None:
+            return super().get_train_dataloader()
+        sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(self.sampler_weights, dtype=torch.double),
+            num_samples=len(self.sampler_weights),
+            replacement=True,
+        )
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.args.train_batch_size,
+            sampler=sampler,
+            collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            persistent_workers=getattr(self.args, "dataloader_persistent_workers", False),
+        )
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         soft_labels = inputs.pop("soft_labels", None)
@@ -540,11 +618,23 @@ class RankedGeneTrainer(Trainer):
             log_probs = F.log_softmax(logits, dim=-1)
             loss = -(target * log_probs).sum(dim=-1).mean()
         else:
-            if self.class_weights is not None:
-                loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
+            if self.focal_gamma and self.focal_gamma > 0:
+                log_probs = F.log_softmax(logits, dim=-1)
+                probs = log_probs.exp()
+                target_log_probs = log_probs.gather(1, labels.unsqueeze(1)).squeeze(1)
+                target_probs = probs.gather(1, labels.unsqueeze(1)).squeeze(1)
+                ce_loss = -target_log_probs
+                if self.class_weights is not None:
+                    weight = self.class_weights.to(logits.device)[labels]
+                    ce_loss = ce_loss * weight
+                focal_factor = (1.0 - target_probs).pow(self.focal_gamma)
+                loss = (focal_factor * ce_loss).mean()
             else:
-                loss_fct = torch.nn.CrossEntropyLoss()
-            loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
+                if self.class_weights is not None:
+                    loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device))
+                else:
+                    loss_fct = torch.nn.CrossEntropyLoss()
+                loss = loss_fct(logits.view(-1, logits.size(-1)), labels.view(-1))
 
         return (loss, outputs) if return_outputs else loss
 
@@ -723,6 +813,8 @@ def main() -> None:
         compute_metrics=compute_metrics,
         callbacks=callbacks,
         class_weights=class_weights,
+        sampler_weights=sampler_weights,
+        focal_gamma=args.focal_gamma or 0.0,
     )
 
     trainer.train()
