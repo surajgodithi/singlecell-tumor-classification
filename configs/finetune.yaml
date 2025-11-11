@@ -2,7 +2,7 @@ model_name_or_path: outputs/geneformer_colon3/checkpoint-409
 model_vocab: /content/Geneformer/geneformer/token_dictionary_gc104M.pkl
 model_gene_name_dict: /content/Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
 tokens_dir: gse144735/processed/tokens
-output_dir: outputs/geneformer_colon4
+output_dir: outputs/geneformer_colon5
 max_length: 2048
 num_epochs: 8
 train_batch_size: 8
@@ -14,10 +14,10 @@ patience: 3
 seed: 42
 class_weights:
   Normal: 1.0
-  Border: 1.6
-  Tumor: 2.5
-token_mask_prob: 0.05
-mixup_prob: 0.3
+  Border: 1.4
+  Tumor: 2.2
+token_mask_prob: 0.03
+mixup_prob: 0.2
 mixup_alpha: 0.6
-balance_strategy: class
+balance_strategy: class_donor
 focal_gamma: 0.0
