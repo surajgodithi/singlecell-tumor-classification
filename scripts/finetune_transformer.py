@@ -782,6 +782,18 @@ def main() -> None:
     )
     data_collator = RankedGeneCollator(num_labels=num_labels)
 
+    sampler_weights = build_sample_weights(
+        train_idx,
+        metadata,
+        args.label_column,
+        args.balance_strategy,
+    )
+    if sampler_weights is not None:
+        print(
+            f"[sampling] Enabled '{args.balance_strategy}' strategy "
+            f"(mean={sampler_weights.mean():.3f}, std={sampler_weights.std():.3f})."
+        )
+
     training_args = TrainingArguments(
         output_dir=str(args.output_dir),
         per_device_train_batch_size=args.train_batch_size,
