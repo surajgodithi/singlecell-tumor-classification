@@ -1,4 +1,4 @@
-model_name_or_path: outputs/geneformer_colon3/checkpoint-409
+model_name_or_path: ctheodoris/Geneformer
 model_vocab: /content/Geneformer/geneformer/token_dictionary_gc104M.pkl
 model_gene_name_dict: /content/Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
 tokens_dir: gse144735/processed/tokens
