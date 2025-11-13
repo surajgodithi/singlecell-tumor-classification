@@ -14,6 +14,7 @@ from typing import Dict, Iterable, Tuple
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier, RandomForestClassifier
+from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 DEFAULT_TOKENS_DIR = Path("gse144735/processed/tokens")
@@ -37,7 +38,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-type",
-        choices=["random_forest", "hist_gb"],
+        choices=["random_forest", "hist_gb", "xgboost"],
         default="random_forest",
         help="Tree model to train (default: random_forest).",
     )
@@ -133,12 +134,27 @@ def train_model(args: argparse.Namespace, X: np.ndarray, y: np.ndarray, train_id
             class_weight="balanced",
             random_state=args.random_state,
         )
-    else:
+    elif args.model_type == "hist_gb":
         model = HistGradientBoostingClassifier(
             max_iter=args.n_estimators,
             max_depth=args.max_depth,
             class_weight="balanced",
             random_state=args.random_state,
+        )
+    else:
+        model = XGBClassifier(
+            objective="multi:softprob" if len(np.unique(y)) > 2 else "binary:logistic",
+            num_class=len(np.unique(y)) if len(np.unique(y)) > 2 else None,
+            n_estimators=args.n_estimators,
+            max_depth=args.max_depth or 6,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            reg_lambda=1.0,
+            reg_alpha=0.0,
+            random_state=args.random_state,
+            n_jobs=args.n_jobs,
+            eval_metric="mlogloss",
         )
     model.fit(X_train, y_train)
     return model

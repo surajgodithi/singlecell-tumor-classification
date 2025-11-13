@@ -1,0 +1,106 @@
+{
+  "top_gene_count": 2000,
+  "feature_strategy": {
+    "top_genes": 2000,
+    "aggregation": "inverse_rank_sum"
+  },
+  "hidden_dims": [
+    512,
+    256
+  ],
+  "dropout": 0.2,
+  "epochs": 40,
+  "metrics": {
+    "train": {
+      "accuracy": 0.9995414596866641,
+      "macro_f1": 0.9993804205507377,
+      "macro_auc": 0.9999321829900663,
+      "confusion_matrix": [
+        [
+          9875,
+          6
+        ],
+        [
+          0,
+          3204
+        ]
+      ],
+      "per_class": {
+        "Normal": {
+          "precision": 1.0,
+          "recall": 0.9993927740107277,
+          "f1": 0.9996962947965174,
+          "support": 9881
+        },
+        "Tumor": {
+          "precision": 0.9981308411214953,
+          "recall": 1.0,
+          "f1": 0.9990645463049579,
+          "support": 3204
+        }
+      }
+    },
+    "val": {
+      "accuracy": 0.6462617953060731,
+      "macro_f1": 0.5320259372634212,
+      "macro_auc": 0.6559127916063949,
+      "confusion_matrix": [
+        [
+          4713,
+          425
+        ],
+        [
+          2499,
+          629
+        ]
+      ],
+      "per_class": {
+        "Normal": {
+          "precision": 0.6534941763727121,
+          "recall": 0.9172829894900739,
+          "f1": 0.7632388663967611,
+          "support": 5138
+        },
+        "Tumor": {
+          "precision": 0.5967741935483871,
+          "recall": 0.20108695652173914,
+          "f1": 0.3008130081300813,
+          "support": 3128
+        }
+      }
+    },
+    "test": {
+      "accuracy": 0.6767276925614383,
+      "macro_f1": 0.6261011682867561,
+      "macro_auc": 0.7076967061950732,
+      "confusion_matrix": [
+        [
+          3167,
+          974
+        ],
+        [
+          986,
+          936
+        ]
+      ],
+      "per_class": {
+        "Normal": {
+          "precision": 0.7625812665542981,
+          "recall": 0.7647911132576672,
+          "f1": 0.7636845912707982,
+          "support": 4141
+        },
+        "Tumor": {
+          "precision": 0.4900523560209424,
+          "recall": 0.4869927159209157,
+          "f1": 0.48851774530271397,
+          "support": 1922
+        }
+      }
+    }
+  },
+  "classes": [
+    "Normal",
+    "Tumor"
+  ]
+}
