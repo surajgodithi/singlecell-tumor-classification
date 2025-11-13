@@ -63,6 +63,7 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
       --output-json outputs/geneformer_colon/eval_metrics.json
     ```
   - The script reuses the donor splits, prints accuracy/F1/AUROC for each split you request (default val/test), and writes the metrics JSON so you can compare against baselines at a glance.
+- **Binary Tumor vs. Normal variant:** since downstream datasets often lack a Border label, the metadata now includes a `BinaryClass` column where Border cells are merged into Normal. Re-run `scripts/rank_nb_baseline.py` with `--label-column BinaryClass` and set `label_column: BinaryClass` in the fine-tune/eval configs to train the Tumor-vs-Normal checkpoint that future cancers will inherit.
 
 ## Dataset
 
@@ -70,17 +71,6 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
 - 27,414 cells after QC
 - 3 tissue types: Normal, Border, Tumor
 - 6 donors (KUL01, KUL19, KUL21, KUL28, KUL30, KUL31)
-
-## Project Structure
-
-```
-gse144735/
-â”œâ”€â”€ raw/              # Downloaded GEO files
-â””â”€â”€ processed/
-    â”œâ”€â”€ *.h5ad        # Filtered AnnData objects
-    â””â”€â”€ tokens/       # Tokenized data and splits
-notebooks/            # Analysis workflows
-```
 
 ## Notes
 

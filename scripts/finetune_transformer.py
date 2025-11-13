@@ -53,6 +53,7 @@ FALLBACK_DEFAULTS = {
     "label_column": "Class",
     "balance_strategy": "none",
     "focal_gamma": 0.0,
+    "warmup_ratio": 0.0,
 }
 
 
@@ -213,6 +214,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=None,
         help="Focal-loss gamma parameter. Set >0 to enable focal loss for hard-label batches.",
+    )
+    parser.add_argument(
+        "--warmup-ratio",
+        type=float,
+        default=None,
+        help="Fraction of total training steps used for LR warmup (default 0.0).",
     )
     return parser
 
@@ -802,6 +809,7 @@ def main() -> None:
         num_train_epochs=args.num_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
+        warmup_ratio=args.warmup_ratio,
         evaluation_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,

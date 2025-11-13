@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Optional path to write the final metrics dictionary as JSON.",
     )
+    parser.add_argument(
+        "--label-column",
+        type=str,
+        default="Class",
+        help="Metadata column to use as labels (default: Class).",
+    )
     return parser.parse_args()
 
 
@@ -203,7 +209,10 @@ def main() -> None:
     X = build_rank_feature_matrix(tokens, lengths, vocab_size)
     metadata = pd.read_csv(token_dir / "gse144735_tokens_metadata.tsv", sep="\t")
     splits = np.load(token_dir / "splits_by_patient.npz", allow_pickle=True)
-    y = metadata["Class"].to_numpy()
+    if args.label_column not in metadata.columns:
+        available = ", ".join(metadata.columns)
+        raise KeyError(f"Label column '{args.label_column}' not found in metadata. Available columns: {available}")
+    y = metadata[args.label_column].to_numpy()
 
     print(f"Sparse matrix nnz={X.nnz} ({X.nnz / (X.shape[0] * X.shape[1]):.6f} density)")
     print(f"Split sizes: train={len(splits['train_idx'])}, val={len(splits['val_idx'])}, test={len(splits['test_idx'])}")

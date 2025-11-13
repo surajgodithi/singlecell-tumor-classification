@@ -1,11 +1,11 @@
 tokens_dir: gse144735/processed/tokens
-model_path: outputs/geneformer_colon6
+model_path: outputs/geneformer_colon_binary
 model_vocab: /content/Geneformer/geneformer/token_dictionary_gc104M.pkl
 model_gene_name_dict: /content/Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
 max_length: 2048
-label_column: Class
+label_column: BinaryClass
 eval_splits:
   - val
   - test
 eval_batch_size: 8
-output_json: outputs/geneformer_colon6/eval_metrics.json
+output_json: outputs/geneformer_colon_binary/eval_metrics.json
