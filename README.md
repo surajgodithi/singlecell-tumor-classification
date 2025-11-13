@@ -65,6 +65,17 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
   - The script reuses the donor splits, prints accuracy/F1/AUROC for each split you request (default val/test), and writes the metrics JSON so you can compare against baselines at a glance.
 - **Binary Tumor vs. Normal variant:** since downstream datasets often lack a Border label, the metadata now includes a `BinaryClass` column where Border cells are merged into Normal. Re-run `scripts/rank_nb_baseline.py` with `--label-column BinaryClass` and set `label_column: BinaryClass` in the fine-tune/eval configs to train the Tumor-vs-Normal checkpoint that future cancers will inherit.
 
+**Tree-Based Baseline** (`scripts/tree_baseline.py`)
+- Converts the ranked tokens into dense inverse-rank features over the top-`k` most frequent genes (default 2,000) and trains either a Random Forest or HistGradientBoosting model for a stronger classical reference point.
+- Example (binary CRC run):
+  ```bash
+  python scripts/tree_baseline.py \
+    --label-column BinaryClass \
+    --model-type random_forest \
+    --output-json baselines/gse144735_tree_rf_binary_metrics.json
+  ```
+- Outputs donor-wise accuracy/F1/AUROC similar to the Naive Bayes script so transformer runs can be compared against both lightweight and heavier classical baselines.
+
 ## Dataset
 
 **GSE144735**: Single-cell RNA-seq from 6 colorectal cancer patients

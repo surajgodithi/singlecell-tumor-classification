@@ -1,0 +1,99 @@
+{
+  "train": {
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "macro_auc": 1.0,
+    "confusion_matrix": [
+      [
+        9881,
+        0
+      ],
+      [
+        0,
+        3204
+      ]
+    ],
+    "per_class": {
+      "Normal": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 9881
+      },
+      "Tumor": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 3204
+      }
+    }
+  },
+  "val": {
+    "accuracy": 0.6235180256472296,
+    "macro_f1": 0.399033717648974,
+    "macro_auc": 0.6924455986635858,
+    "confusion_matrix": [
+      [
+        5103,
+        35
+      ],
+      [
+        3077,
+        51
+      ]
+    ],
+    "per_class": {
+      "Normal": {
+        "precision": 0.623838630806846,
+        "recall": 0.9931880108991825,
+        "f1": 0.7663312809731191,
+        "support": 5138
+      },
+      "Tumor": {
+        "precision": 0.5930232558139535,
+        "recall": 0.016304347826086956,
+        "f1": 0.031736154324828875,
+        "support": 3128
+      }
+    }
+  },
+  "test": {
+    "accuracy": 0.6912419594260267,
+    "macro_f1": 0.4345598190262378,
+    "macro_auc": 0.8298668601917677,
+    "confusion_matrix": [
+      [
+        4138,
+        3
+      ],
+      [
+        1869,
+        53
+      ]
+    ],
+    "per_class": {
+      "Normal": {
+        "precision": 0.6888629931746296,
+        "recall": 0.9992755373098285,
+        "f1": 0.8155301537248719,
+        "support": 4141
+      },
+      "Tumor": {
+        "precision": 0.9464285714285714,
+        "recall": 0.027575442247658687,
+        "f1": 0.05358948432760363,
+        "support": 1922
+      }
+    }
+  },
+  "classes": [
+    "Normal",
+    "Tumor"
+  ],
+  "model_type": "random_forest",
+  "top_gene_count": 2000,
+  "feature_strategy": {
+    "top_genes": 2000,
+    "aggregation": "inverse_rank_sum"
+  }
+}
