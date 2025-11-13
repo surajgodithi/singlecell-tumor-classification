@@ -57,6 +57,20 @@ FALLBACK_DEFAULTS = {
 }
 
 
+def ensure_label_column(metadata: pd.DataFrame, label_column: str) -> pd.DataFrame:
+    """Ensure the requested label column exists, deriving BinaryClass on demand."""
+    if label_column in metadata.columns:
+        return metadata
+    if label_column == "BinaryClass" and "Class" in metadata.columns:
+        metadata = metadata.copy()
+        metadata[label_column] = metadata["Class"].replace({"Border": "Normal"})
+        return metadata
+    raise KeyError(
+        f"{label_column} not found in metadata columns: {metadata.columns.tolist()}. "
+        "Provide the column or adjust the config."
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Fine-tune a transformer classifier on ranked gene tokens."
@@ -693,8 +707,7 @@ def main() -> None:
         raise ValueError(f"max_length={args.max_length} exceeds token width {tokens.shape[1]}")
 
     metadata = pd.read_csv(metadata_path, sep="\t")
-    if args.label_column not in metadata.columns:
-        raise KeyError(f"{args.label_column} not found in metadata columns: {metadata.columns.tolist()}")
+    metadata = ensure_label_column(metadata, args.label_column)
     encoded_labels, id2label, label2id = prepare_label_mappings(metadata[args.label_column])
 
     splits = np.load(splits_path, allow_pickle=True)

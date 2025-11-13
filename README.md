@@ -64,6 +64,7 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
     ```
   - The script reuses the donor splits, prints accuracy/F1/AUROC for each split you request (default val/test), and writes the metrics JSON so you can compare against baselines at a glance.
 - **Binary Tumor vs. Normal variant:** since downstream datasets often lack a Border label, the metadata now includes a `BinaryClass` column where Border cells are merged into Normal. Re-run `scripts/rank_nb_baseline.py` with `--label-column BinaryClass` and set `label_column: BinaryClass` in the fine-tune/eval configs to train the Tumor-vs-Normal checkpoint that future cancers will inherit.
+  - The training/eval/baseline scripts will auto-derive `BinaryClass` from the original `Class` column if it is missing (Border → Normal), so you do not need to retokenize or edit the TSV manually on new machines.
 
 - **Tree-Based Baselines** (`scripts/tree_baseline.py`)
   - Converts ranked tokens into dense inverse-rank features over the top-`k` most frequent genes (default 2,000) and feeds them into classical ensembles.

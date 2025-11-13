@@ -50,6 +50,16 @@ FALLBACK_DEFAULTS = {
 }
 
 
+def ensure_label_column(metadata: pd.DataFrame, label_column: str) -> pd.DataFrame:
+    if label_column in metadata.columns:
+        return metadata
+    if label_column == "BinaryClass" and "Class" in metadata.columns:
+        metadata = metadata.copy()
+        metadata[label_column] = metadata["Class"].replace({"Border": "Normal"})
+        return metadata
+    raise KeyError(f"{label_column} not found in metadata columns: {metadata.columns.tolist()}.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Evaluate a fine-tuned transformer checkpoint on the donor splits."
@@ -435,6 +445,7 @@ def main() -> None:
         raise ValueError(f"max_length={args.max_length} exceeds token width {tokens.shape[1]}")
 
     metadata = pd.read_csv(args.tokens_dir / "gse144735_tokens_metadata.tsv", sep="\t")
+    metadata = ensure_label_column(metadata, args.label_column)
     splits = np.load(args.tokens_dir / "splits_by_patient.npz", allow_pickle=True)
 
     dataset_vocab = load_gene_vocab(args.tokens_dir / "gene_vocab.tsv")

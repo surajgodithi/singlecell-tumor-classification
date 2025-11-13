@@ -193,6 +193,16 @@ def evaluate_split(
     return {"accuracy": acc, "macro_auc": auc, "per_class": metrics}
 
 
+def ensure_label_column(metadata: pd.DataFrame, label_column: str) -> pd.DataFrame:
+    if label_column in metadata.columns:
+        return metadata
+    if label_column == "BinaryClass" and "Class" in metadata.columns:
+        metadata = metadata.copy()
+        metadata[label_column] = metadata["Class"].replace({"Border": "Normal"})
+        return metadata
+    raise KeyError(f"Label column '{label_column}' not found in metadata columns: {metadata.columns.tolist()}")
+
+
 def main() -> None:
     args = parse_args()
     token_dir = args.tokens_dir
@@ -208,10 +218,8 @@ def main() -> None:
 
     X = build_rank_feature_matrix(tokens, lengths, vocab_size)
     metadata = pd.read_csv(token_dir / "gse144735_tokens_metadata.tsv", sep="\t")
+    metadata = ensure_label_column(metadata, args.label_column)
     splits = np.load(token_dir / "splits_by_patient.npz", allow_pickle=True)
-    if args.label_column not in metadata.columns:
-        available = ", ".join(metadata.columns)
-        raise KeyError(f"Label column '{args.label_column}' not found in metadata. Available columns: {available}")
     y = metadata[args.label_column].to_numpy()
 
     print(f"Sparse matrix nnz={X.nnz} ({X.nnz / (X.shape[0] * X.shape[1]):.6f} density)")

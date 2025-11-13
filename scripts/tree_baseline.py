@@ -20,6 +20,16 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 DEFAULT_TOKENS_DIR = Path("gse144735/processed/tokens")
 
 
+def ensure_label_column(metadata: pd.DataFrame, label_column: str) -> pd.DataFrame:
+    if label_column in metadata.columns:
+        return metadata
+    if label_column == "BinaryClass" and "Class" in metadata.columns:
+        metadata = metadata.copy()
+        metadata[label_column] = metadata["Class"].replace({"Border": "Normal"})
+        return metadata
+    raise KeyError(f"Label column '{label_column}' not found in metadata columns: {metadata.columns.tolist()}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Tree-based baseline (RandomForest / HistGradientBoosting) on ranked gene tokens."
@@ -218,9 +228,7 @@ def main() -> None:
     args = parse_args()
     tokens, lengths = load_rank_tokens(args.tokens_dir / "gse144735_gene_rank_tokens.npz")
     metadata = pd.read_csv(args.tokens_dir / "gse144735_tokens_metadata.tsv", sep="\t")
-
-    if args.label_column not in metadata.columns:
-        raise KeyError(f"Label column '{args.label_column}' not found in metadata.")
+    metadata = ensure_label_column(metadata, args.label_column)
     label_strings = metadata[args.label_column].astype(str).to_numpy()
     class_labels = sorted(np.unique(label_strings).tolist())
     label_to_id = {cls: idx for idx, cls in enumerate(class_labels)}
