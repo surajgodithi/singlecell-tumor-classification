@@ -1,6 +1,11 @@
-﻿# Single-Cell Tumor Classification
+# Single-Cell Tumor Classification
 
 This project starts by fine-tuning single-cell foundation transformers to separate tumor from normal cells in colorectal cancer (GSE144735), with the long-term goal of extending to additional cancers.
+
+## Project Goal and Strategy
+- Build a strong colorectal (binary) checkpoint as a hub, then test how well it transfers to new cancers (breast, lung) via zero-shot evaluation and fine-tunes from base vs. CRC-start checkpoints.
+- Keep donor-wise splits/baselines for every dataset to quantify gains over classical models (Naive Bayes, trees, shallow MLP).
+- Emphasize biological interpretation: document donor shift (e.g., KUL19 vs. KUL01), inspect attention/gene-importance, and track shared vs. tissue-specific signals after transfer.
 
 ## Quick Start
 
@@ -64,7 +69,7 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
     ```
   - The script reuses the donor splits, prints accuracy/F1/AUROC for each split you request (default val/test), and writes the metrics JSON so you can compare against baselines at a glance.
 - **Binary Tumor vs. Normal variant:** since downstream datasets often lack a Border label, the metadata now includes a `BinaryClass` column where Border cells are merged into Normal. Re-run `scripts/rank_nb_baseline.py` with `--label-column BinaryClass` and set `label_column: BinaryClass` in the fine-tune/eval configs to train the Tumor-vs-Normal checkpoint that future cancers will inherit.
-  - The training/eval/baseline scripts will auto-derive `BinaryClass` from the original `Class` column if it is missing (Border → Normal), so you do not need to retokenize or edit the TSV manually on new machines.
+  - The training/eval/baseline scripts will auto-derive `BinaryClass` from the original `Class` column if it is missing (Border -> Normal), so you do not need to retokenize or edit the TSV manually on new machines.
 
 - **Tree-Based Baselines** (`scripts/tree_baseline.py`)
   - Converts ranked tokens into dense inverse-rank features over the top-`k` most frequent genes (default 2,000) and feeds them into classical ensembles.
@@ -77,7 +82,7 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
       --output-json baselines/gse144735_tree_histgb_binary_metrics.json
     ```
 - **Shallow MLP Baseline** (`scripts/mlp_baseline.py`)
-  - Builds the same inverse-rank dense features and trains a lightweight PyTorch MLP (default hidden layers 512→256) with early stopping on the validation donor.
+  - Builds the same inverse-rank dense features and trains a lightweight PyTorch MLP (default hidden layers 512x256) with early stopping on the validation donor.
   - Example:
     ```bash
     python scripts/mlp_baseline.py \
@@ -98,5 +103,4 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
 - The tokenization uses a vocabulary of 24,471 genes
 - Each cell is represented by up to 2,048 top-expressed genes
 - All splits are patient-wise to ensure generalization
-
 
