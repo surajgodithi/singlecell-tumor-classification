@@ -34,6 +34,8 @@ from transformers import (
 
 DEFAULT_CONFIG_PATH = Path("configs/finetune.yaml")
 PATH_FIELDS = {"tokens_dir", "model_vocab", "model_gene_name_dict", "output_dir", "config"}
+TOKEN_GLOB = "*_gene_rank_tokens.npz"
+META_GLOB = "*_tokens_metadata.tsv"
 FALLBACK_DEFAULTS = {
     "tokens_dir": Path("gse144735/processed/tokens"),
     "output_dir": Path("outputs/transformer_finetune"),
@@ -309,6 +311,15 @@ def resolve_class_weights(raw_value, label2id: Dict[str, int]) -> Optional[torch
             raise KeyError(f"class_weights references unknown label '{label}'.")
         weights[label2id[label]] = float(weight)
     return weights
+
+
+def find_single(path: Path, pattern: str, description: str) -> Path:
+    candidates = list(path.glob(pattern))
+    if not candidates:
+        raise FileNotFoundError(f"No {description} matching '{pattern}' under {path}")
+    if len(candidates) > 1:
+        raise FileExistsError(f"Multiple {description} files found under {path}: {candidates}")
+    return candidates[0]
 
 
 def load_gene_vocab(path: Path) -> pd.Series:
@@ -695,8 +706,8 @@ def main() -> None:
     set_seed(args.seed)
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    tokens_path = args.tokens_dir / "gse144735_gene_rank_tokens.npz"
-    metadata_path = args.tokens_dir / "gse144735_tokens_metadata.tsv"
+    tokens_path = find_single(args.tokens_dir, TOKEN_GLOB, "token npz")
+    metadata_path = find_single(args.tokens_dir, META_GLOB, "metadata")
     splits_path = args.tokens_dir / "splits_by_patient.npz"
     dataset_vocab_path = args.tokens_dir / "gene_vocab.tsv"
 
