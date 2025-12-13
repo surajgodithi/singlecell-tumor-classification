@@ -18,6 +18,8 @@ from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 
 DEFAULT_TOKENS_DIR = Path("gse144735/processed/tokens")
+TOKEN_GLOB = "*_gene_rank_tokens.npz"
+META_GLOB = "*_tokens_metadata.tsv"
 
 
 def ensure_label_column(metadata: pd.DataFrame, label_column: str) -> pd.DataFrame:
@@ -226,8 +228,19 @@ def confusion_matrix(y_true: np.ndarray, y_pred: np.ndarray, labels: Iterable[in
 
 def main() -> None:
     args = parse_args()
-    tokens, lengths = load_rank_tokens(args.tokens_dir / "gse144735_gene_rank_tokens.npz")
-    metadata = pd.read_csv(args.tokens_dir / "gse144735_tokens_metadata.tsv", sep="\t")
+    token_files = list(args.tokens_dir.glob(TOKEN_GLOB))
+    if not token_files:
+        raise FileNotFoundError(f"No token file matching {TOKEN_GLOB} found under {args.tokens_dir}")
+    if len(token_files) > 1:
+        raise FileExistsError(f"Multiple token files found under {args.tokens_dir}: {token_files}")
+    tokens, lengths = load_rank_tokens(token_files[0])
+
+    metadata_files = list(args.tokens_dir.glob(META_GLOB))
+    if not metadata_files:
+        raise FileNotFoundError(f"No metadata file matching {META_GLOB} found under {args.tokens_dir}")
+    if len(metadata_files) > 1:
+        raise FileExistsError(f"Multiple metadata files found under {args.tokens_dir}: {metadata_files}")
+    metadata = pd.read_csv(metadata_files[0], sep="\t")
     metadata = ensure_label_column(metadata, args.label_column)
     label_strings = metadata[args.label_column].astype(str).to_numpy()
     class_labels = sorted(np.unique(label_strings).tolist())

@@ -25,6 +25,8 @@ from scipy.stats import rankdata
 
 
 DEFAULT_TOKENS_DIR = Path("gse144735/processed/tokens")
+TOKEN_GLOB = "*_gene_rank_tokens.npz"
+META_GLOB = "*_tokens_metadata.tsv"
 
 
 def parse_args() -> argparse.Namespace:
@@ -207,7 +209,12 @@ def main() -> None:
     args = parse_args()
     token_dir = args.tokens_dir
 
-    tokens_npz = np.load(token_dir / "gse144735_gene_rank_tokens.npz")
+    token_files = list(token_dir.glob(TOKEN_GLOB))
+    if not token_files:
+        raise FileNotFoundError(f"No token file matching {TOKEN_GLOB} found under {token_dir}")
+    if len(token_files) > 1:
+        raise FileExistsError(f"Multiple token files found under {token_dir}: {token_files}")
+    tokens_npz = np.load(token_files[0])
     tokens = tokens_npz["tokens"]
     lengths = tokens_npz["lengths"]
 
@@ -217,9 +224,17 @@ def main() -> None:
     print(f"Loaded tokens: shape={tokens.shape}, vocab={vocab_size}, total entries={int(lengths.sum())}")
 
     X = build_rank_feature_matrix(tokens, lengths, vocab_size)
-    metadata = pd.read_csv(token_dir / "gse144735_tokens_metadata.tsv", sep="\t")
+    metadata_files = list(token_dir.glob(META_GLOB))
+    if not metadata_files:
+        raise FileNotFoundError(f"No metadata file matching {META_GLOB} found under {token_dir}")
+    if len(metadata_files) > 1:
+        raise FileExistsError(f"Multiple metadata files found under {token_dir}: {metadata_files}")
+    metadata = pd.read_csv(metadata_files[0], sep="\t")
     metadata = ensure_label_column(metadata, args.label_column)
-    splits = np.load(token_dir / "splits_by_patient.npz", allow_pickle=True)
+    splits_path = token_dir / "splits_by_patient.npz"
+    if not splits_path.exists():
+        raise FileNotFoundError(f"{splits_path} not found. Generate donor-wise splits first.")
+    splits = np.load(splits_path, allow_pickle=True)
     y = metadata[args.label_column].to_numpy()
 
     print(f"Sparse matrix nnz={X.nnz} ({X.nnz / (X.shape[0] * X.shape[1]):.6f} density)")
