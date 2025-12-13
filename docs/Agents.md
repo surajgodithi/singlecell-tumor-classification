@@ -32,7 +32,6 @@
 - Maintain the personal-project tone in notebooks/docs (aligns with the portfolio narrative).
 - Keep `project.md` private (ignored by git).
 - Before coding, verify repo state via `git status -sb`; avoid touching unrelated user changes.
-- Even though lung is larger than CRC, starting from the CRC hub can still help via better inductive bias and faster convergence on shared oncogenic signals. Base-start vs. CRC-start on lung gives a clean comparison. More CRC data would strengthen the hub, but the current checkpoint suffices to measure transfer gains.
 
 ## Summary Writing Conventions
 - When summarizing completed work (QC, tokenization, training), use journal-style prose (Nature Methods/Bioinformatics tone).
