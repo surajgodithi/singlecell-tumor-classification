@@ -98,9 +98,14 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
 - 3 tissue types: Normal, Border, Tumor
 - 6 donors (KUL01, KUL19, KUL21, KUL28, KUL30, KUL31)
 
+**GSE131907 (Lung)**: Single-cell RNA-seq from 58 patients (multiple tumor/normal/metastatic sites)
+- QC/tokenization/splits complete; tokens/splits under `gse131907/processed/tokens/` (80/10/10 patients: train 46, val 5, test 7).
+- Baselines (BinaryClass): NB test acc 0.690/macro AUC 0.753 (Normal F1 low); HistGB test acc 0.889/macro F1 0.843/macro AUC 0.970; XGBoost test acc 0.875/macro F1 0.817/macro AUC 0.964; MLP test acc 0.826/macro F1 0.758/macro AUC 0.906.
+- Zero-shot CRC hub (focal2) on lung: val acc 0.488/macro F1 0.433/macro AUC 0.376; test acc 0.696/macro F1 0.659/macro AUC 0.728 (remap matched ~16.9k genes; ~38.5% missing).
+- Lung fine-tunes next: base-start run using CRC focal2-style hyperparams adjusted for lung balance (Normal 1.2/Tumor 1.0, focal_gamma 1.5, token_mask_prob 0.01, mixup off, class_donor). CRC-start run will reuse the focal2 checkpoint once a full checkpoint export is available.
+
 ## Notes
 
 - The tokenization uses a vocabulary of 24,471 genes
 - Each cell is represented by up to 2,048 top-expressed genes
 - All splits are patient-wise to ensure generalization
-
