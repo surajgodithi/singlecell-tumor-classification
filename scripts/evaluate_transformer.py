@@ -40,6 +40,8 @@ PATH_FIELDS = {
     "output_json",
     "config",
 }
+TOKEN_GLOB = "*_gene_rank_tokens.npz"
+META_GLOB = "*_tokens_metadata.tsv"
 FALLBACK_DEFAULTS = {
     "tokens_dir": Path("gse144735/processed/tokens"),
     "max_length": 2048,
@@ -171,6 +173,15 @@ def parse_args() -> argparse.Namespace:
 
     args.config_path = str(config_path) if config_path else None
     return args
+
+
+def find_single(path: Path, pattern: str, description: str) -> Path:
+    candidates = list(path.glob(pattern))
+    if not candidates:
+        raise FileNotFoundError(f"No {description} matching '{pattern}' under {path}")
+    if len(candidates) > 1:
+        raise FileExistsError(f"Multiple {description} files found under {path}: {candidates}")
+    return candidates[0]
 
 
 def load_gene_vocab(path: Path) -> pd.Series:
@@ -438,13 +449,13 @@ def main() -> None:
     args = parse_args()
     model_path = resolve_model_path(args.model_path)
 
-    tokens_npz = np.load(args.tokens_dir / "gse144735_gene_rank_tokens.npz")
+    tokens_npz = np.load(find_single(args.tokens_dir, TOKEN_GLOB, "token npz"))
     tokens = tokens_npz["tokens"]
     lengths = tokens_npz["lengths"]
     if args.max_length > tokens.shape[1]:
         raise ValueError(f"max_length={args.max_length} exceeds token width {tokens.shape[1]}")
 
-    metadata = pd.read_csv(args.tokens_dir / "gse144735_tokens_metadata.tsv", sep="\t")
+    metadata = pd.read_csv(find_single(args.tokens_dir, META_GLOB, "metadata"), sep="\t")
     metadata = ensure_label_column(metadata, args.label_column)
     splits = np.load(args.tokens_dir / "splits_by_patient.npz", allow_pickle=True)
 
