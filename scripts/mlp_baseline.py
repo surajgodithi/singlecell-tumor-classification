@@ -49,7 +49,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--learning-rate", type=float, default=1e-3, help="Optimizer learning rate.")
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="AdamW weight decay.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--device", type=str, default="cuda", help="Device to use (cuda|cpu|auto).")
+    parser.add_argument("--device", type=str, default="auto", help="Device to use (cuda|mps|cpu|auto).")
     parser.add_argument(
         "--output-json",
         type=Path,
@@ -190,7 +190,12 @@ def main() -> None:
     set_seed(args.seed)
 
     if args.device == "auto":
-        device_str = "cuda" if torch.cuda.is_available() else "cpu"
+        if torch.cuda.is_available():
+            device_str = "cuda"
+        elif torch.backends.mps.is_available():
+            device_str = "mps"
+        else:
+            device_str = "cpu"
     else:
         device_str = args.device
     device = torch.device(device_str)

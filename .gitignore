@@ -1,5 +1,6 @@
 docs/
 .venv/
+.python-version
 __pycache__/
 .gse144735_cache/
 gse144735/

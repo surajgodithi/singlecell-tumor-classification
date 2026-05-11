@@ -1,7 +1,7 @@
 tokens_dir: gse131907/processed/tokens
 model_path: outputs/geneformer_colon_binary_focal2
-model_vocab: /content/Geneformer/geneformer/token_dictionary_gc104M.pkl
-model_gene_name_dict: /content/Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
+model_vocab: Geneformer/geneformer/token_dictionary_gc104M.pkl
+model_gene_name_dict: Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
 max_length: 2048
 label_column: BinaryClass
 eval_splits:
