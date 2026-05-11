@@ -91,6 +91,32 @@ For Colab users: Use a High-RAM runtime. The notebooks will handle dependency in
     ```
   - Useful for demonstrating transformer gains over both classical ensembles and small neural nets.
 
+## Results – GSE144735 (Colorectal, Binary Tumor vs. Normal)
+
+Donor-wise splits: train KUL21/KUL28/KUL30/KUL31, val KUL19, test KUL01. All models use `BinaryClass` labels (Border merged into Normal).
+
+### Validation (KUL19 — hardest donor shift)
+
+| Model | Accuracy | Macro F1 | Macro AUC | Tumor Recall |
+|---|---|---|---|---|
+| Rank Naive Bayes | 0.626 | — | 0.645 | 0.030 |
+| XGBoost | 0.582 | 0.526 | 0.643 | 0.316 |
+| HistGradientBoosting | 0.582 | 0.566 | 0.639 | 0.514 |
+| Shallow MLP | 0.637 | 0.519 | 0.656 | 0.188 |
+| **Finetuned Geneformer** | **0.673** | **0.645** | **0.727** | **0.516** |
+
+### Test (KUL01)
+
+| Model | Accuracy | Macro F1 | Macro AUC | Tumor Recall |
+|---|---|---|---|---|
+| Rank Naive Bayes | 0.708 | — | 0.719 | 0.264 |
+| XGBoost | 0.748 | 0.609 | 0.819 | 0.241 |
+| HistGradientBoosting | 0.767 | 0.695 | 0.825 | 0.443 |
+| Shallow MLP | 0.659 | 0.612 | 0.696 | 0.490 |
+| **Finetuned Geneformer** | **0.670** | **0.663** | **0.789** | **0.827** |
+
+Geneformer's key advantage is Tumor Recall — identifying nearly twice as many tumor cells as the best classical model (0.827 vs. 0.443), which matters most for downstream target identification.
+
 ## Dataset
 
 **GSE144735**: Single-cell RNA-seq from 6 colorectal cancer patients
