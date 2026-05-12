@@ -141,5 +141,5 @@ Geneformer's key advantage is Tumor Recall — identifying nearly twice as many 
 ## Notes
 
 - The tokenization uses a vocabulary of 24,471 genes
-- Each cell is represented by up to 1,024 top-expressed genes
+- Each cell is represented by up to 2,048 top-expressed genes (training uses top 1,024)
 - All splits are patient-wise to ensure generalization
