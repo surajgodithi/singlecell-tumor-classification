@@ -3,9 +3,21 @@
 This project starts by fine-tuning single-cell foundation transformers to separate tumor from normal cells in colorectal cancer (GSE144735), with the long-term goal of extending to additional cancers.
 
 ## Project Goal and Strategy
-- Build a strong colorectal (binary) checkpoint as a hub, then test how well it transfers to new cancers (breast, lung) via zero-shot evaluation and fine-tunes from base vs. CRC-start checkpoints.
-- Keep donor-wise splits/baselines for every dataset to quantify gains over classical models (Naive Bayes, trees, shallow MLP).
-- Emphasize biological interpretation: document donor shift (e.g., KUL19 vs. KUL01), inspect attention/gene-importance, and track shared vs. tissue-specific signals after transfer.
+
+**Current focus: CRC Leave-One-Donor-Out (LODO) pipeline** — rigorous end-to-end analysis
+of which genes drive tumor identity in colorectal cancer before expanding to other tissues.
+
+**Pipeline order:**
+```
+QC → Tokenization → LODO CV → Gene Ranking → In Silico Perturbation → Aggregation
+```
+
+1. **LODO Cross-Validation** (`scripts/lodo_cv.py`) — 6-fold donor-held-out training; one fresh Geneformer checkpoint per fold.
+2. **Gene Ranking** (`scripts/gene_ranking_analysis.py`) — expression + attention ranking per fold to reveal which genes the model uses.
+3. **In Silico Perturbation** (`scripts/in_silico_perturbation.py`) — remove one gene at a time, measure change in P(Tumor); two-phase: known CRC markers + top 200 attention genes.
+4. **Aggregation** (`scripts/aggregate_perturbation.py`) — cross-donor consensus ranked target candidate list. *(Step 4 — coming next)*
+
+Multi-tissue transfer (breast, lung) is deferred until the CRC pipeline produces a validated target list. See `docs/Research_Strategy_Transition.md` for the full rationale.
 
 ## Quick Start
 

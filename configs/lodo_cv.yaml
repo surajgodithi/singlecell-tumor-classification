@@ -1,0 +1,42 @@
+model_name_or_path: Geneformer/Geneformer-V2-104M
+model_vocab: Geneformer/geneformer/token_dictionary_gc104M.pkl
+model_gene_name_dict: Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
+
+tokens_dir: gse144735/processed/tokens
+output_dir: outputs/lodo
+results_dir: results/lodo
+
+label_column: BinaryClass
+donors:
+  - KUL01
+  - KUL19
+  - KUL21
+  - KUL28
+  - KUL30
+  - KUL31
+
+# Loss
+focal_gamma: 1.0
+class_weights:
+  Normal: 1.0
+  Tumor: 2.05
+
+# Regularisation
+token_mask_prob: 0.015
+mixup_prob: 0.0
+mixup_alpha: 0.4
+
+# Sampler
+balance_strategy: class_donor
+
+# Training schedule
+num_epochs: 8
+learning_rate: 2.0e-5
+weight_decay: 0.01
+warmup_ratio: 0.10
+gradient_accumulation_steps: 8
+train_batch_size: 4    # reduced for MPS; effective batch = 4×8 = 32 (same as prior runs)
+eval_batch_size: 8
+patience: 3
+max_length: 1024
+seed: 42
