@@ -1,11 +1,10 @@
 # Single-Cell Tumor Classification
 
-This project starts by fine-tuning single-cell foundation transformers to separate tumor from normal cells in colorectal cancer (GSE144735), with the long-term goal of extending to additional cancers.
+This project fine-tunes single-cell foundation transformers to separate tumor from normal cells in colorectal cancer (GSE144735) and uses the trained models to identify which genes drive tumor identity.
 
 ## Project Goal and Strategy
 
-**Current focus: CRC Leave-One-Donor-Out (LODO) pipeline** — rigorous end-to-end analysis
-of which genes drive tumor identity in colorectal cancer before expanding to other tissues.
+**Goal: identify load-bearing genes for tumor identity in colorectal cancer** — which genes, when removed, most reliably shift a cell's predicted identity from Tumor to Normal across patients?
 
 **Pipeline order:**
 ```
@@ -15,9 +14,7 @@ QC → Tokenization → LODO CV → Gene Ranking → In Silico Perturbation → 
 1. **LODO Cross-Validation** (`scripts/lodo_cv.py`) — 6-fold donor-held-out training; one fresh Geneformer checkpoint per fold.
 2. **Gene Ranking** (`scripts/gene_ranking_analysis.py`) — expression + attention ranking per fold to reveal which genes the model uses.
 3. **In Silico Perturbation** (`scripts/in_silico_perturbation.py`) — remove one gene at a time, measure change in P(Tumor); two-phase: known CRC markers + top 200 attention genes.
-4. **Aggregation** (`scripts/aggregate_perturbation.py`) — cross-donor consensus ranked target candidate list. *(Step 4 — coming next)*
-
-Multi-tissue transfer (breast, lung) is deferred until the CRC pipeline produces a validated target list. See `docs/Research_Strategy_Transition.md` for the full rationale.
+4. **Aggregation** (`scripts/aggregate_perturbation.py`) — cross-donor consensus ranked target candidate list.
 
 ## Quick Start
 
@@ -140,10 +137,9 @@ Geneformer's key advantage is Tumor Recall — identifying nearly twice as many 
 - QC/tokenization/splits complete; tokens/splits under `gse131907/processed/tokens/` (80/10/10 patients: train 46, val 5, test 7).
 - Baselines (BinaryClass): NB test acc 0.690/macro AUC 0.753 (Normal F1 low); HistGB test acc 0.889/macro F1 0.843/macro AUC 0.970; XGBoost test acc 0.875/macro F1 0.817/macro AUC 0.964; MLP test acc 0.826/macro F1 0.758/macro AUC 0.906.
 - Zero-shot CRC hub (focal2) on lung: val acc 0.488/macro F1 0.433/macro AUC 0.376; test acc 0.696/macro F1 0.659/macro AUC 0.728 (remap matched ~16.9k genes; ~38.5% missing).
-- Lung fine-tunes next: base-start run using CRC focal2-style hyperparams adjusted for lung balance (Normal 1.2/Tumor 1.0, focal_gamma 1.5, token_mask_prob 0.01, mixup off, class_donor). CRC-start run will reuse the focal2 checkpoint once a full checkpoint export is available.
 
 ## Notes
 
 - The tokenization uses a vocabulary of 24,471 genes
-- Each cell is represented by up to 2,048 top-expressed genes
+- Each cell is represented by up to 1,024 top-expressed genes
 - All splits are patient-wise to ensure generalization
