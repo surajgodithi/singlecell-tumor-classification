@@ -36,7 +36,7 @@ weight_decay: 0.01
 warmup_ratio: 0.10
 gradient_accumulation_steps: 8
 train_batch_size: 4    # reduced for MPS; effective batch = 4×8 = 32 (same as prior runs)
-eval_batch_size: 8
+eval_batch_size: 16
 patience: 3
 max_length: 2048
 seed: 42
