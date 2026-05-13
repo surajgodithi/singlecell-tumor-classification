@@ -11,7 +11,6 @@ and launches a Hugging Face Trainer run for sequence classification.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import pickle
 from pathlib import Path
@@ -639,17 +638,8 @@ class RankedGeneTrainer(Trainer):
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         soft_labels = inputs.pop("soft_labels", None)
-        device_type = next(model.parameters()).device.type
-        # bfloat16 autocast on MPS: halves activation memory, speeds up matmuls.
-        # CUDA bf16 is handled by TrainingArguments; CPU falls through.
-        autocast_ctx = (
-            torch.autocast(device_type="mps", dtype=torch.bfloat16)
-            if device_type == "mps"
-            else contextlib.nullcontext()
-        )
-        with autocast_ctx:
-            outputs = model(**inputs)
-        logits = outputs.logits.float()  # cast back to fp32 for numerically stable loss
+        outputs = model(**inputs)
+        logits = outputs.logits
         labels = inputs.get("labels")
         if soft_labels is not None:
             target = soft_labels.to(logits.device)
