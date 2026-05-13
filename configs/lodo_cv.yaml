@@ -22,7 +22,7 @@ class_weights:
   Tumor: 2.05
 
 # Regularisation
-token_mask_prob: 0.015
+token_mask_prob: 0.01
 mixup_prob: 0.0
 mixup_alpha: 0.4
 
@@ -38,5 +38,5 @@ gradient_accumulation_steps: 8
 train_batch_size: 4    # reduced for MPS; effective batch = 4×8 = 32 (same as prior runs)
 eval_batch_size: 8
 patience: 3
-max_length: 1024
+max_length: 2048
 seed: 42
