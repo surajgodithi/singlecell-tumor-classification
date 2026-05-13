@@ -188,7 +188,11 @@ def compute_detailed_metrics(
 
     try:
         probs = softmax(logits)
-        macro_auc = float(roc_auc_score(labels, probs, multi_class="ovo", average="macro"))
+        if len(id2label) == 2:
+            pos_idx = next(i for i, n in id2label.items() if n == "Tumor")
+            macro_auc = float(roc_auc_score(labels, probs[:, pos_idx]))
+        else:
+            macro_auc = float(roc_auc_score(labels, probs, multi_class="ovo", average="macro"))
     except ValueError:
         macro_auc = float("nan")
 
