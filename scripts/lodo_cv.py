@@ -22,9 +22,10 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterator, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -37,6 +38,7 @@ from sklearn.metrics import (
     f1_score,
     roc_auc_score,
 )
+from torch.utils.data import DataLoader, Sampler
 from transformers import (
     AutoConfig,
     AutoModelForSequenceClassification,
@@ -60,6 +62,10 @@ from finetune_transformer import (
     resolve_class_weights,
     softmax,
 )
+
+# Do NOT raise the MPS memory watermark. Setting PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.0
+# disables the soft limit and an over-allocation surfaces as an asynchronous Metal
+# "command buffer ignored" cascade instead of a clean Python OOM. Keep the default.
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -101,7 +107,226 @@ FALLBACK_DEFAULTS: dict = {
     "seed": 42,
     "max_length": 2048,
     "donors": ALL_DONORS,
+    # Speed knobs (all metric-preserving)
+    "amp_dtype": "bf16",          # "bf16" | "fp16" | "none" — autocast on MPS/CUDA
+    "attn_implementation": "sdpa", # "sdpa" | "eager"
+    "length_bucketing": True,      # group same-length cells per batch; needs class_donor sampler
+    "bucket_mega_factor": 50,      # mega-batch = train_bs × this; sort within each
+    "pad_to_multiple_of": 8,       # pad dynamic batches up to this multiple
+    "save_total_limit": 2,
+    "eval_accumulation_steps": 16, # stream eval logits off MPS to CPU
+    "gradient_checkpointing": True,# required at L=2048 on 32GB MPS — SDPA on MPS isn't FA
 }
+
+
+# ---------------------------------------------------------------------------
+# Speed-optimised sampler, collator, and trainer (local to LODO)
+# ---------------------------------------------------------------------------
+
+class LengthBucketedWeightedSampler(Sampler[int]):
+    """Weighted draws + intra-mega-batch length sort.
+
+    Per epoch: draw N weighted indices with replacement, split into mega-batches
+    of ``batch_size * mega_factor``, sort each mega-batch by length descending,
+    then flatten. The DataLoader's default batching (consecutive ``batch_size``
+    indices) then produces same-length batches.
+
+    Class-donor balancing is preserved because the weighted draw happens first;
+    bucketing only re-orders the drawn indices.
+    """
+
+    def __init__(
+        self,
+        weights: np.ndarray,
+        lengths: np.ndarray,
+        batch_size: int,
+        mega_factor: int = 50,
+        seed: int = 0,
+    ) -> None:
+        if len(weights) != len(lengths):
+            raise ValueError("weights and lengths must have the same length")
+        self.weights = torch.as_tensor(weights, dtype=torch.double)
+        self.lengths = np.asarray(lengths, dtype=np.int64)
+        self.batch_size = int(batch_size)
+        self.mega_size = int(batch_size) * int(mega_factor)
+        self.num_samples = len(weights)
+        self.seed = int(seed)
+        self.epoch = 0
+
+    def __len__(self) -> int:
+        return self.num_samples
+
+    def __iter__(self) -> Iterator[int]:
+        g = torch.Generator()
+        g.manual_seed(self.seed + self.epoch)
+        rng = np.random.default_rng(self.seed + self.epoch)
+        self.epoch += 1
+
+        drawn = torch.multinomial(
+            self.weights, self.num_samples, replacement=True, generator=g
+        ).numpy()
+        # Shuffle so mega-batch composition varies across epochs
+        drawn = drawn[rng.permutation(len(drawn))]
+
+        bs = self.batch_size
+        result: list[int] = []
+        for start in range(0, len(drawn), self.mega_size):
+            chunk = drawn[start:start + self.mega_size]
+            # Sort the chunk by length so adjacent positions become same-length batches.
+            order = np.argsort(-self.lengths[chunk], kind="stable")
+            sorted_chunk = chunk[order]
+            # Carve into mini-batches, then shuffle batch order. This preserves the
+            # bucketing benefit (cells *within* a batch are similar length) while
+            # randomising *which* batch the optimizer sees first — avoids the
+            # "first iter is worst-case 2048" sawtooth and gives smoother optim dynamics.
+            n_full = len(sorted_chunk) // bs
+            batches = [sorted_chunk[i * bs:(i + 1) * bs] for i in range(n_full)]
+            tail = sorted_chunk[n_full * bs:]
+            batch_order = rng.permutation(len(batches))
+            for bi in batch_order:
+                result.extend(batches[bi].tolist())
+            if len(tail) > 0:
+                result.extend(tail.tolist())
+        return iter(result)
+
+
+class LengthSortedSampler(Sampler[int]):
+    """Deterministic length-sorted (descending) sampler for eval."""
+
+    def __init__(self, lengths: np.ndarray) -> None:
+        self.order = np.argsort(-np.asarray(lengths), kind="stable").tolist()
+
+    def __len__(self) -> int:
+        return len(self.order)
+
+    def __iter__(self) -> Iterator[int]:
+        return iter(self.order)
+
+
+class DynamicPadCollator(RankedGeneCollator):
+    """Trims each batch tensor to the longest real sequence in the batch."""
+
+    def __init__(self, num_labels: int, max_length: int, pad_to_multiple_of: int = 8):
+        super().__init__(num_labels=num_labels)
+        self.max_length = int(max_length)
+        self.pad_to_multiple_of = max(1, int(pad_to_multiple_of))
+
+    def __call__(self, batch):
+        features = super().__call__(batch)
+        attn = features["attention_mask"]
+        # Ranked-gene tokenization puts real tokens at the front — sum gives length.
+        real_max = int(attn.sum(dim=1).max().item())
+        if real_max <= 0:
+            return features
+        m = self.pad_to_multiple_of
+        target = min(self.max_length, ((real_max + m - 1) // m) * m)
+        if target < attn.shape[1]:
+            features["input_ids"] = features["input_ids"][:, :target].contiguous()
+            features["attention_mask"] = features["attention_mask"][:, :target].contiguous()
+        return features
+
+
+class FastLodoTrainer(RankedGeneTrainer):
+    """RankedGeneTrainer + length-bucketed sampling + MPS autocast."""
+
+    def __init__(
+        self,
+        *args,
+        train_lengths: Optional[np.ndarray] = None,
+        eval_lengths: Optional[np.ndarray] = None,
+        bucket_mega_factor: int = 50,
+        amp_dtype: Optional[torch.dtype] = None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.train_lengths = train_lengths
+        self.eval_lengths = eval_lengths
+        self.bucket_mega_factor = int(bucket_mega_factor)
+        self.amp_dtype = amp_dtype
+        dev = self.args.device.type if hasattr(self.args, "device") else "cpu"
+        self._amp_device = dev if dev in ("mps", "cuda") else None
+
+    def get_train_dataloader(self):
+        if self.train_dataset is None:
+            raise ValueError("Trainer: training requires a train_dataset.")
+        if self.sampler_weights is None or self.train_lengths is None:
+            return super().get_train_dataloader()
+        sampler = LengthBucketedWeightedSampler(
+            weights=self.sampler_weights,
+            lengths=self.train_lengths,
+            batch_size=self.args.train_batch_size,
+            mega_factor=self.bucket_mega_factor,
+            seed=int(self.args.seed),
+        )
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.args.train_batch_size,
+            sampler=sampler,
+            collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers,
+            pin_memory=self.args.dataloader_pin_memory,
+            persistent_workers=getattr(self.args, "dataloader_persistent_workers", False),
+        )
+
+    def _get_eval_sampler(self, eval_dataset):
+        if self.eval_lengths is not None and len(self.eval_lengths) == len(eval_dataset):
+            return LengthSortedSampler(self.eval_lengths)
+        return super()._get_eval_sampler(eval_dataset)
+
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        if self.amp_dtype is None or self._amp_device is None:
+            return super().compute_loss(
+                model, inputs, return_outputs=return_outputs,
+                num_items_in_batch=num_items_in_batch,
+            )
+        with torch.autocast(device_type=self._amp_device, dtype=self.amp_dtype):
+            result = super().compute_loss(
+                model, inputs, return_outputs=return_outputs,
+                num_items_in_batch=num_items_in_batch,
+            )
+        if return_outputs:
+            loss, outputs = result
+            return loss.float(), outputs
+        return result.float()
+
+    def prediction_step(self, model, inputs, prediction_loss_only, ignore_keys=None):
+        if self.amp_dtype is None or self._amp_device is None:
+            return super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys=ignore_keys
+            )
+        with torch.autocast(device_type=self._amp_device, dtype=self.amp_dtype):
+            return super().prediction_step(
+                model, inputs, prediction_loss_only, ignore_keys=ignore_keys
+            )
+
+    def evaluate(self, *args, **kwargs):
+        # Release MPS activations from the last training pass before eval allocates
+        # its own working set. Prevents OOM when train and eval working sets stack.
+        if self._amp_device == "mps" and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+        result = super().evaluate(*args, **kwargs)
+        if self._amp_device == "mps" and hasattr(torch.mps, "empty_cache"):
+            torch.mps.empty_cache()
+        return result
+
+
+def _resolve_amp_dtype(name: Optional[str]) -> Optional[torch.dtype]:
+    if name is None:
+        return None
+    key = str(name).lower()
+    if key in ("none", "off", "false", ""):
+        return None
+    if key in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if key in ("fp16", "float16", "half"):
+        return torch.float16
+    raise ValueError(f"Unknown amp_dtype: {name!r} (expected bf16, fp16, or none)")
+
+
+def _compute_cell_lengths(tokens: np.ndarray, pad_marker: int = -1) -> np.ndarray:
+    """Number of real tokens per cell (column count where token != pad_marker)."""
+    return (tokens != pad_marker).sum(axis=1).astype(np.int64)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +536,7 @@ def run_fold(
     label2id: Dict[str, int],
     remap: Optional[np.ndarray],
     pad_fill_value: int,
+    cell_lengths: np.ndarray,
     cfg: dict,
     dry_run: bool = False,
 ) -> None:
@@ -342,7 +568,20 @@ def run_fold(
         mixup_prob=0.0,
         num_labels=num_labels,
     )
-    collator = RankedGeneCollator(num_labels=num_labels)
+    collator = DynamicPadCollator(
+        num_labels=num_labels,
+        max_length=int(cfg["max_length"]),
+        pad_to_multiple_of=int(cfg.get("pad_to_multiple_of", 8)),
+    )
+
+    # Per-position lengths aligned to train_idx / val_idx ordering
+    train_lengths = cell_lengths[train_idx]
+    val_lengths = cell_lengths[val_idx]
+    print(
+        f"[lengths] train: min={train_lengths.min()} med={int(np.median(train_lengths))} "
+        f"max={train_lengths.max()} | val: min={val_lengths.min()} "
+        f"med={int(np.median(val_lengths))} max={val_lengths.max()}"
+    )
 
     # --- Dry-run: check pipeline and exit ---
     if dry_run:
@@ -376,10 +615,21 @@ def run_fold(
         id2label=id2label,
         label2id=label2id,
     )
-    model = AutoModelForSequenceClassification.from_pretrained(
-        str(cfg["model_name_or_path"]),
-        config=model_config,
-    )
+    attn_impl = str(cfg.get("attn_implementation", "sdpa") or "eager")
+    try:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            str(cfg["model_name_or_path"]),
+            config=model_config,
+            attn_implementation=attn_impl,
+        )
+        print(f"[model] loaded with attn_implementation={attn_impl}")
+    except (TypeError, ValueError) as exc:
+        # Older HF or unsupported impl — fall back silently
+        print(f"[model] attn_implementation={attn_impl} unsupported ({exc}); using default.")
+        model = AutoModelForSequenceClassification.from_pretrained(
+            str(cfg["model_name_or_path"]),
+            config=model_config,
+        )
 
     class_weights = resolve_class_weights(cfg.get("class_weights"), label2id)
 
@@ -387,6 +637,7 @@ def run_fold(
         output_dir=str(fold_out),
         per_device_train_batch_size=int(cfg["train_batch_size"]),
         per_device_eval_batch_size=int(cfg["eval_batch_size"]),
+        eval_accumulation_steps=int(cfg.get("eval_accumulation_steps", 16)),
         gradient_accumulation_steps=int(cfg["gradient_accumulation_steps"]),
         num_train_epochs=int(cfg["num_epochs"]),
         learning_rate=float(cfg["learning_rate"]),
@@ -394,6 +645,7 @@ def run_fold(
         warmup_ratio=float(cfg["warmup_ratio"]),
         eval_strategy="epoch",
         save_strategy="epoch",
+        save_total_limit=int(cfg.get("save_total_limit", 2)),
         load_best_model_at_end=True,
         metric_for_best_model="macro_f1",
         greater_is_better=True,
@@ -402,10 +654,31 @@ def run_fold(
         seed=int(cfg["seed"]),
         dataloader_num_workers=0,       # required for stable fork behaviour on macOS
         dataloader_pin_memory=False,    # pin_memory unsupported on MPS
-        gradient_checkpointing=False,
+        gradient_checkpointing=bool(cfg.get("gradient_checkpointing", True)),
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
+    if training_args.gradient_checkpointing:
+        print("[memory] gradient_checkpointing=True (use_reentrant=False)")
 
-    trainer = RankedGeneTrainer(
+    amp_dtype = _resolve_amp_dtype(cfg.get("amp_dtype"))
+    if amp_dtype is not None:
+        print(f"[amp] autocast enabled — dtype={str(amp_dtype).split('.')[-1]}")
+
+    use_bucketing = bool(cfg.get("length_bucketing", True)) and sampler_weights is not None
+    trainer_cls = FastLodoTrainer
+    trainer_kwargs = dict(
+        train_lengths=train_lengths if use_bucketing else None,
+        eval_lengths=val_lengths,
+        bucket_mega_factor=int(cfg.get("bucket_mega_factor", 50)),
+        amp_dtype=amp_dtype,
+    )
+    if use_bucketing:
+        print(
+            f"[sampling] length-bucketed weighted sampler "
+            f"(mega_factor={trainer_kwargs['bucket_mega_factor']})"
+        )
+
+    trainer = trainer_cls(
         model=model,
         args=training_args,
         train_dataset=train_ds,
@@ -416,6 +689,7 @@ def run_fold(
         class_weights=class_weights,
         sampler_weights=sampler_weights,
         focal_gamma=float(cfg.get("focal_gamma") or 0.0),
+        **trainer_kwargs,
     )
 
     trainer.train()
@@ -488,6 +762,20 @@ def main() -> None:
             f"max_length={cfg['max_length']} exceeds token columns {tokens.shape[1]}."
         )
 
+    # Cell-level real-token counts — used for length-bucketed sampling and
+    # for the dynamic-pad collator's logging. Compute once over the whole dataset.
+    if "lengths" in tokens_npz.files:
+        cell_lengths = tokens_npz["lengths"].astype(np.int64)
+        cell_lengths = np.minimum(cell_lengths, int(cfg["max_length"]))
+    else:
+        cell_lengths = np.minimum(
+            _compute_cell_lengths(tokens), int(cfg["max_length"])
+        )
+    print(
+        f"Cell lengths — min={cell_lengths.min()} median={int(np.median(cell_lengths))} "
+        f"mean={int(cell_lengths.mean())} max={cell_lengths.max()}"
+    )
+
     metadata = pd.read_csv(find_single(tokens_dir, META_GLOB, "metadata"), sep="\t")
     metadata = ensure_label_column(metadata, cfg["label_column"])
     encoded_labels, id2label, label2id = prepare_label_mappings(metadata[cfg["label_column"]])
@@ -534,6 +822,7 @@ def main() -> None:
             label2id=label2id,
             remap=remap,
             pad_fill_value=pad_fill_value,
+            cell_lengths=cell_lengths,
             cfg=cfg,
             dry_run=args.dry_run,
         )

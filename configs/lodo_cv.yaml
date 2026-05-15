@@ -30,13 +30,30 @@ mixup_alpha: 0.4
 balance_strategy: class_donor
 
 # Training schedule
-num_epochs: 8
+num_epochs: 5          # pre-LODO + 1024 LODO both peaked at epoch 5
 learning_rate: 2.0e-5
 weight_decay: 0.01
 warmup_ratio: 0.10
 gradient_accumulation_steps: 8
 train_batch_size: 4    # reduced for MPS; effective batch = 4×8 = 32 (same as prior runs)
-eval_batch_size: 16
-patience: 3
+eval_batch_size: 8     # bs=16 was the prior safe value; staying conservative for 32GB MPS
+eval_accumulation_steps: 16  # stream eval logits off MPS to CPU to bound memory
+patience: 2            # epoch-5 has been best; allow early stop if a fold tops out at 3
 max_length: 2048
 seed: 42
+
+# Speed (all metric-preserving)
+amp_dtype: none              # bf16 | fp16 | none — autocast on MPS forward pass
+                             # NOTE: bf16 + gradient_checkpointing + SDPA on MPS PyTorch 2.11
+                             # produced NaN grad_norm at iter 1 (2026-05-13). Default to none
+                             # until that combination is verified safe on this hardware.
+attn_implementation: sdpa    # sdpa | eager — fused QK^T/softmax/AV in PyTorch
+length_bucketing: true       # group same-length cells per batch (huge attention saving)
+bucket_mega_factor: 50       # per-epoch shuffle: sort within chunks of bs * this
+pad_to_multiple_of: 8        # dynamic batch padding rounds up to a multiple of 8
+save_total_limit: 2          # only keep best + latest checkpoint to save disk + IO
+
+# Memory
+gradient_checkpointing: true # recompute activations during backward — required at L=2048
+                             # on 32GB MPS (SDPA on MPS is not memory-efficient like CUDA FA).
+                             # Cuts peak activation memory ~70%, costs ~30% in compute.
