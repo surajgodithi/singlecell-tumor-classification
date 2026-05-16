@@ -12,7 +12,7 @@ This project fine-tunes single-cell foundation transformers (Geneformer) to sepa
 | Patients | ~28 with confident cancer cells, 11 with matched normal lung |
 | Cancer-cell label | **Cell-level** (`Cell_subtype == "Malignant cells"`) + tLung epithelial (`tS1`/`tS2`/`tS3`) |
 | Normal label | `Sample_Origin == "nLung"` AND `Cell_type.refined == "Epithelial cells"` (3,703 cells across 11 patients) |
-| Split strategy | Patient-level 70/15/15 train/val/test (no LODO needed at this sample size) |
+| Split strategy | Patient-level 70/15/15 train/val/test |
 
 Why this dataset over GSE144735 (CRC): the lung data has **cell-level malignancy annotations** by the original authors, eliminating the cell-composition confound that limits sample-level labels.
 
