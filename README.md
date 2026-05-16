@@ -1,110 +1,81 @@
 # Single-Cell Tumor Classification
 
-This project fine-tunes single-cell foundation transformers to separate tumor from normal cells in colorectal cancer (GSE144735) and uses the trained models to identify which genes drive tumor identity.
+This project fine-tunes single-cell foundation transformers (Geneformer) to separate cancer cells from normal cells using single-cell RNA-seq data, and uses the trained models to identify candidate tumor driver/suppressor genes via in silico perturbation across patients.
 
-## Project Goal and Strategy
+## Active dataset (2026-05-15 onward)
 
-**Goal: identify load-bearing genes for tumor identity in colorectal cancer** — which genes, when removed, most reliably shift a cell's predicted identity from Tumor to Normal across patients?
+**GSE131907 — Lung Adenocarcinoma** (Kim et al., *Nature Communications* 2020).
 
-**Pipeline order:**
+| | Value |
+|---|---|
+| Total cells | 208,506 |
+| Patients | ~28 with confident cancer cells, 11 with matched normal lung |
+| Cancer-cell label | **Cell-level** (`Cell_subtype == "Malignant cells"`) + tLung epithelial (`tS1`/`tS2`/`tS3`) |
+| Normal label | `Sample_Origin == "nLung"` AND `Cell_type.refined == "Epithelial cells"` (3,703 cells across 11 patients) |
+| Split strategy | Patient-level 70/15/15 train/val/test (no LODO needed at this sample size) |
+
+Why this dataset over GSE144735 (CRC): the lung data has **cell-level malignancy annotations** by the original authors, eliminating the cell-composition confound that limits sample-level labels.
+
+## Project goal
+
+> **Identify load-bearing genes for tumor identity in lung adenocarcinoma** — which genes, when removed from the input, most reliably shift a cell's predicted identity from Tumor → Normal across patients? Validate consistency across held-out patients and cross-reference against external resources (COSMIC, DepMap).
+
+The transformer is a *tool* to prioritize 16,000+ genes down to a tractable testable list. The ranked candidate gene list — not the classification metrics — is the deliverable.
+
+## Pipeline (current)
+
 ```
-QC → Tokenization → LODO CV → Gene Ranking → In Silico Perturbation → Aggregation
+QC → Tokenization → Patient-level train/val/test split → Fine-tune → Gene Ranking
+   → In Silico Perturbation (single-gene + knockout sweep + pairwise) → Aggregation
 ```
 
-1. **LODO Cross-Validation** (`scripts/lodo_cv.py`) — 6-fold donor-held-out training; one fresh Geneformer checkpoint per fold.
-2. **Gene Ranking** (`scripts/gene_ranking_analysis.py`) — expression + attention ranking per fold to reveal which genes the model uses.
-3. **In Silico Perturbation** (`scripts/in_silico_perturbation.py`) — remove one gene at a time, measure change in P(Tumor); two-phase: known CRC markers + top 200 attention genes.
-4. **Aggregation** (`scripts/aggregate_perturbation.py`) — cross-donor consensus ranked target candidate list.
+| Stage | Script / notebook | Status |
+|---|---|---|
+| QC | `scripts/lung_qc_prep.py` (mirrors `notebooks/lung_01_quality_control.ipynb`, Colab cells stripped, save step added) | New |
+| Tokenization | `notebooks/lung_02_tokenisation.ipynb` — label rule needs update | Needs rewrite |
+| Splits | `scripts/lung_split.py` (patient-level 70/15/15) | To write |
+| Fine-tune | Adapted from `scripts/lodo_cv.py` to single split | To adapt |
+| Gene ranking | `scripts/gene_ranking_analysis.py` | Adapts |
+| Perturbation | `scripts/in_silico_perturbation.py` | Adapts + biology-first revisions |
+| Aggregation | `scripts/aggregate_perturbation.py` | Adapts |
 
-## Quick Start
+## Biology-first revisions in progress
 
-### 1. Setup
+Beyond the dataset pivot, several pipeline improvements are being implemented to make the analysis biologically credible rather than just metric-maximizing:
 
-Install dependencies:
+1. **Dilution fix** — perturbation `delta` computed over cells *where the gene is present*, not all cells.
+2. **Negative-control genes** — housekeepers in Phase 1 to calibrate the noise floor.
+3. **Knockout sweep** — cumulative perturbation of top-1..top-10 hits, not arbitrary K.
+4. **Cell-type stratification** — built in to lung via `Cell_type.refined`. Epithelial-only perturbation will be a primary output.
+5. **Bootstrap CI** on per-fold deltas for statistical interpretation.
+6. **External validation** — `scripts/cross_reference_targets.py` joining final ranked list against COSMIC Cancer Gene Census and DepMap CRISPR essentiality.
+7. **Pairwise interaction matrix** (top 20 genes, 190 pairs) — reveals pathway redundancy and synergy.
+
+## Setup
+
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
+
+# Lung dataset is downloaded automatically by scripts/lung_qc_prep.py via pooch
+# (~410 MB compressed counts + small annotation)
 ```
 
-For Colab users: Use a High-RAM runtime. The notebooks will handle dependency installation automatically.
+The model checkpoint (Geneformer-V2-104M) lives under `Geneformer/` after `git lfs pull`.
 
-### 2. Data Preparation
+## Status (2026-05-15)
 
-**Quality Control** (`notebooks/01_quality_control.ipynb`)
-- Downloads GSE144735 data from GEO
-- Filters cells and genes using standard QC thresholds
-- Selects highly variable genes
-- Outputs: `gse144735/processed/gse144735_filtered_raw.h5ad`
+- CRC LODO pipeline development is **paused**. KUL01 fold (Tumor recall 0.682, macro_f1 0.7225 at L=2048) is on disk as a pilot demonstrating the pipeline runs end-to-end.
+- Lung raw data downloaded (`gse131907/raw/`).
+- Lung labeling decision finalized.
+- Lung tokenization + split scripts: to be written.
+- Lung training: not started.
 
-**Tokenization** (`notebooks/02_tokenisation.ipynb`)
-- Converts gene expression into ranked token sequences
-- Each cell becomes a sequence of top expressed genes
-- Outputs: Token matrix and metadata in `gse144735/processed/tokens/`
+## Historical results — GSE144735 (CRC)
 
-**Train/Val/Test Splits** (`notebooks/03_splits.ipynb`)
-- Creates patient-wise data splits (no cell leakage between splits)
-- 4 patients for training, 1 for validation, 1 for test
-- Outputs: Split indices in `gse144735/processed/tokens/`
+These were the pilot runs that validated the pipeline before the lung pivot. Kept for reference and to demonstrate the comparison baseline classical methods provide. **Not the active analysis.**
 
-### 3. Model Training
-
-**Transformer Fine-tuning** (`scripts/finetune_transformer.py`)
-- Wraps Hugging Face `Trainer` to fine-tune a pretrained single-cell transformer (e.g., `geneformer/geneformer`) on the ranked tokens.
-- Accepts the NPZ tokens, metadata labels, and donor-wise splits generated in the earlier notebooks.
-- Example:
-  ```bash
-  python scripts/finetune_transformer.py \
-    --model-name-or-path geneformer/geneformer \
-    --model-vocab /path/to/geneformer_gene_vocab.tsv \
-    --output-dir outputs/geneformer_finetune
-  ```
-- The script writes validation/test metrics to `metrics.json` inside the output directory and saves the best checkpoint for downstream analysis.
-- `model_vocab` in `configs/finetune.yaml` can point to either a TSV (gene symbol -> token id) or Geneformer's pickled `token_dictionary_gc104M.pkl`; the script auto-detects the format and remaps dataset genes accordingly. Provide `model_gene_name_dict` (e.g., Geneformer's `gene_name_id_dict_gc104M.pkl`) so symbols can be translated to the pretrained model's identifiers when a direct lookup is missing.
-- For every new dataset, capture both the rank-based baseline (`scripts/rank_nb_baseline.py`) and the transformer fine-tune metrics (using either the original Geneformer checkpoint or a previously fine-tuned one) so improvements are always benchmarked per dataset. The training script records the best-performing checkpoint path in `outputs/<run>/best_checkpoint.txt`, which the evaluation script uses automatically.
-- Recommended per-dataset workflow:
-  1. Run `scripts/rank_nb_baseline.py` on that dataset's tokens/splits and log the donor-wise metrics.
-  2. Fine-tune Geneformer starting from the original Hugging Face checkpoint and compare against the baseline.
-  3. Before updating a multi-cancer checkpoint, evaluate it zero-shot on the new dataset's test split to measure cross-dataset generalization.
-  4. Continually fine-tune the latest checkpoint on the new dataset, compare against both the baseline and the fresh fine-tune, and record whether continual learning improved results.
-- To skip long CLI commands, edit `configs/finetune.yaml` with your preferred model/checkpoint paths and simply run `python scripts/finetune_transformer.py`; the script auto-loads that config (or pass `--config path/to/file.yaml` for alternates).
-- **Checkpoint Evaluation** (`scripts/evaluate_transformer.py`)
-  - After training, quickly evaluate val/test splits (and capture per-class precision/recall/F1) either by editing `configs/eval.yaml` and running `python scripts/evaluate_transformer.py`, or by specifying paths explicitly:
-    ```bash
-    python scripts/evaluate_transformer.py \
-      --tokens-dir gse144735/processed/tokens \
-      --model-path outputs/geneformer_colon/best-model \
-      --model-vocab /content/Geneformer/geneformer/token_dictionary_gc104M.pkl \
-      --model-gene-name-dict /content/Geneformer/geneformer/gene_name_id_dict_gc104M.pkl \
-      --output-json outputs/geneformer_colon/eval_metrics.json
-    ```
-  - The script reuses the donor splits, prints accuracy/F1/AUROC for each split you request (default val/test), and writes the metrics JSON so you can compare against baselines at a glance.
-- **Binary Tumor vs. Normal variant:** since downstream datasets often lack a Border label, the metadata now includes a `BinaryClass` column where Border cells are merged into Normal. Re-run `scripts/rank_nb_baseline.py` with `--label-column BinaryClass` and set `label_column: BinaryClass` in the fine-tune/eval configs to train the Tumor-vs-Normal checkpoint that future cancers will inherit.
-  - The training/eval/baseline scripts will auto-derive `BinaryClass` from the original `Class` column if it is missing (Border -> Normal), so you do not need to retokenize or edit the TSV manually on new machines.
-
-- **Tree-Based Baselines** (`scripts/tree_baseline.py`)
-  - Converts ranked tokens into dense inverse-rank features over the top-`k` most frequent genes (default 2,000) and feeds them into classical ensembles.
-  - Supports `--model-type random_forest`, `hist_gb` (sklearn HistGradientBoosting), or `xgboost`. Each run writes donor-wise metrics comparable to the Naive Bayes output.
-  - Example (binary CRC run):
-    ```bash
-    python scripts/tree_baseline.py \
-      --label-column BinaryClass \
-      --model-type hist_gb \
-      --output-json baselines/gse144735_tree_histgb_binary_metrics.json
-    ```
-- **Shallow MLP Baseline** (`scripts/mlp_baseline.py`)
-  - Builds the same inverse-rank dense features and trains a lightweight PyTorch MLP (default hidden layers 512x256) with early stopping on the validation donor.
-  - Example:
-    ```bash
-    python scripts/mlp_baseline.py \
-      --label-column BinaryClass \
-      --output-json baselines/gse144735_mlp_binary_metrics.json
-    ```
-  - Useful for demonstrating transformer gains over both classical ensembles and small neural nets.
-
-## Results – GSE144735 (Colorectal, Binary Tumor vs. Normal)
-
-Donor-wise splits: train KUL21/KUL28/KUL30/KUL31, val KUL19, test KUL01. All models use `BinaryClass` labels (Border merged into Normal).
-
-### Validation (KUL19 — hardest donor shift)
+### Validation (KUL19 — pre-LODO hardest donor)
 
 | Model | Accuracy | Macro F1 | Macro AUC | Tumor Recall |
 |---|---|---|---|---|
@@ -114,7 +85,7 @@ Donor-wise splits: train KUL21/KUL28/KUL30/KUL31, val KUL19, test KUL01. All mod
 | Shallow MLP | 0.637 | 0.519 | 0.656 | 0.188 |
 | **Finetuned Geneformer** | **0.673** | **0.645** | **0.727** | **0.516** |
 
-### Test (KUL01)
+### Test (KUL01 — pre-LODO test donor)
 
 | Model | Accuracy | Macro F1 | Macro AUC | Tumor Recall |
 |---|---|---|---|---|
@@ -124,22 +95,19 @@ Donor-wise splits: train KUL21/KUL28/KUL30/KUL31, val KUL19, test KUL01. All mod
 | Shallow MLP | 0.659 | 0.612 | 0.696 | 0.490 |
 | **Finetuned Geneformer** | **0.670** | **0.663** | **0.789** | **0.827** |
 
-Geneformer's key advantage is Tumor Recall — identifying nearly twice as many tumor cells as the best classical model (0.827 vs. 0.443), which matters most for downstream target identification.
+### LODO (KUL01 fold only, 2026-05-15)
 
-## Dataset
+| Metric | Value |
+|---|---|
+| Accuracy | 0.7506 |
+| Macro F1 | 0.7225 |
+| Macro AUC | 0.8278 |
+| Tumor P / R / F1 | 0.593 / 0.682 / 0.634 |
+| Normal P / R / F1 | 0.841 / 0.782 / 0.811 |
 
-**GSE144735**: Single-cell RNA-seq from 6 colorectal cancer patients
-- 27,414 cells after QC
-- 3 tissue types: Normal, Border, Tumor
-- 6 donors (KUL01, KUL19, KUL21, KUL28, KUL30, KUL31)
-
-**GSE131907 (Lung)**: Single-cell RNA-seq from 58 patients (multiple tumor/normal/metastatic sites)
-- QC/tokenization/splits complete; tokens/splits under `gse131907/processed/tokens/` (80/10/10 patients: train 46, val 5, test 7).
-- Baselines (BinaryClass): NB test acc 0.690/macro AUC 0.753 (Normal F1 low); HistGB test acc 0.889/macro F1 0.843/macro AUC 0.970; XGBoost test acc 0.875/macro F1 0.817/macro AUC 0.964; MLP test acc 0.826/macro F1 0.758/macro AUC 0.906.
-- Zero-shot CRC hub (focal2) on lung: val acc 0.488/macro F1 0.433/macro AUC 0.376; test acc 0.696/macro F1 0.659/macro AUC 0.728 (remap matched ~16.9k genes; ~38.5% missing).
+KUL01 LODO Tumor recall (0.682) fell short of the 0.70 target. Per-fold reliability varies sharply with donor cell counts (KUL31 has only 75 Tumor cells) — one of several factors motivating the lung pivot.
 
 ## Notes
 
-- The tokenization uses a vocabulary of 24,471 genes
-- Each cell is represented by up to 2,048 top-expressed genes (training uses top 1,024)
-- All splits are patient-wise to ensure generalization
+- Tokenization uses a per-cell ranked vocabulary of expressed genes (top 2,048 per cell, mapped to Geneformer's 104M-token vocabulary).
+- All splits are patient-level to ensure no cell leakage between train and held-out.

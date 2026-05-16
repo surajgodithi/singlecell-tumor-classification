@@ -72,6 +72,7 @@ FALLBACK_DEFAULTS: dict = {
     "tokens_dir": "gse144735/processed/tokens",
     "output_dir": "outputs/lodo",
     "results_dir": "results/lodo",
+    "anndata_path": "gse144735/processed/gse144735_filtered_raw.h5ad",
     "model_name_or_path": "Geneformer/Geneformer-V2-104M",
     "model_vocab": "Geneformer/geneformer/token_dictionary_gc104M.pkl",
     "model_gene_name_dict": "Geneformer/geneformer/gene_name_id_dict_gc104M.pkl",
@@ -92,7 +93,15 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--config", type=Path, default=None)
     p.add_argument("--donors", nargs="+", metavar="DONOR", default=None,
-                   help="Donors to analyse (default: all 6).")
+                   help="LODO donors to analyse (CRC mode). Ignored if --single-fold.")
+    p.add_argument("--single-fold", action="store_true",
+                   help="Run on a single train/val/test split (lung mode). Uses test_idx from "
+                        "splits_by_patient.npz; one set of outputs named by `output_prefix`.")
+    p.add_argument("--split-set", choices=["test", "val"], default="test",
+                   help="In --single-fold mode, which split to rank on (default: test).")
+    p.add_argument("--output-prefix", type=str, default=None,
+                   help="In --single-fold mode, output file prefix (default: config 'output_prefix' "
+                        "or 'lung_test').")
     p.add_argument("--use-base-model", action="store_true",
                    help="Use base Geneformer weights instead of fold checkpoint. "
                         "Attention weights will be untrained (for pipeline testing).")
@@ -140,21 +149,27 @@ def build_model_token_to_gene(
 
 def compute_expression_ranking(
     adata: sc.AnnData,
-    donor: str,
+    patient_ids: list,
     label_column: str,
+    label: str = "",
 ) -> Dict[str, pd.DataFrame]:
     """
     Returns a dict with keys "Tumor" and "Normal", each a DataFrame:
       gene | mean_expr | rank | is_marker
     ranked descending by mean_expr, top TOP_N rows only.
+
+    `patient_ids` is a list of patient IDs (as strings); cells where
+    metadata.Patient ∈ patient_ids will be included. `label` is used only
+    for log messages.
     """
-    donor_mask = adata.obs["Patient"] == donor
+    pat_str = [str(p) for p in patient_ids]
+    donor_mask = adata.obs["Patient"].astype(str).isin(pat_str)
     results = {}
     for cls in ("Tumor", "Normal"):
         cls_mask = donor_mask & (adata.obs[label_column] == cls)
         n_cells = cls_mask.sum()
         if n_cells == 0:
-            print(f"  [warn] No {cls} cells found for donor {donor} — skipping.")
+            print(f"  [warn] No {cls} cells found for {label or pat_str} — skipping.")
             continue
 
         # Use counts layer (raw UMI)
@@ -175,7 +190,7 @@ def compute_expression_ranking(
         df["rank"] = df.index + 1
         df["is_marker"] = df["gene"].isin(CRC_MARKERS)
         results[cls] = df.head(TOP_N).copy()
-        print(f"  [{donor}] {cls}: {n_cells} cells, top gene = {df.iloc[0]['gene']} "
+        print(f"  [{label or ','.join(pat_str)}] {cls}: {n_cells} cells, top gene = {df.iloc[0]['gene']} "
               f"(mean={df.iloc[0]['mean_expr']:.2f})")
     return results
 
@@ -211,7 +226,8 @@ def _dot_plot(
 
 def plot_expression_ranking(
     rankings: Dict[str, pd.DataFrame],
-    donor: str,
+    label: str,
+    output_prefix: str,
     results_dir: Path,
 ) -> None:
     n_classes = len(rankings)
@@ -224,14 +240,14 @@ def plot_expression_ranking(
     for i, (cls, df) in enumerate(rankings.items()):
         _dot_plot(
             axes[i, 0], df, "mean_expr",
-            title=f"{donor} — {cls} — Top {TOP_N} by Mean Expression",
+            title=f"{label} — {cls} — Top {TOP_N} by Mean Expression",
             point_color=class_colors.get(cls, "#666666"),
             y_label="Mean raw count",
         )
 
-    fig.suptitle(f"Expression Ranking — {donor}", fontsize=12, fontweight="bold")
+    fig.suptitle(f"Expression Ranking — {label}", fontsize=12, fontweight="bold")
     fig.tight_layout()
-    out = results_dir / f"fold_{donor}_expression_ranking.png"
+    out = results_dir / f"{output_prefix}_expression_ranking.png"
     fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out}")
@@ -295,14 +311,17 @@ def extract_attention_rankings(
     pad_fill_value: int,
     model: AutoModelForSequenceClassification,
     model_token_to_gene: Dict[int, str],
-    donor: str,
+    patient_ids: list,
+    label: str,
     cfg: dict,
     device: torch.device,
 ) -> Dict[str, pd.DataFrame]:
     """
-    For each class (Tumor, Normal), run inference on the held-out donor's cells
-    with output_attentions=True. Accumulate mean attention received per gene token
-    across all cells in the class, across all heads of the final transformer layer.
+    For each class (Tumor, Normal), run inference on cells from `patient_ids` with
+    output_attentions=True. Accumulate mean attention received per gene token across
+    all cells in the class, across all heads of the final transformer layer.
+
+    `label` is used purely for log messages (e.g. "KUL01" or "lung_test").
 
     Returns dict {"Tumor": ranked DataFrame, "Normal": ranked DataFrame}.
     """
@@ -310,15 +329,17 @@ def extract_attention_rankings(
     num_labels = len(id2label)
     max_length = int(cfg["max_length"])
     attn_batch_size = int(cfg.get("attn_batch_size", 2))
+    pat_str = [str(p) for p in patient_ids]
+    in_split = metadata["Patient"].astype(str).isin(pat_str)
 
     for cls in ("Tumor", "Normal"):
-        cls_mask = (metadata["Patient"] == donor) & (metadata[cfg["label_column"]] == cls)
+        cls_mask = in_split & (metadata[cfg["label_column"]] == cls)
         cls_idx = np.where(cls_mask)[0].astype(np.int64)
         if len(cls_idx) == 0:
-            print(f"  [warn] No {cls} cells for donor {donor}.")
+            print(f"  [warn] No {cls} cells for {label}.")
             continue
 
-        print(f"  [{donor}] Extracting attention for {cls} ({len(cls_idx)} cells, "
+        print(f"  [{label}] Extracting attention for {cls} ({len(cls_idx)} cells, "
               f"batch_size={attn_batch_size}) …")
 
         ds = RankedGeneDataset(
@@ -389,7 +410,7 @@ def extract_attention_rankings(
             rows.append({"gene": gene, "mean_attn": mean_attn})
 
         if not rows:
-            print(f"  [warn] No gene-mapped tokens found for {cls} {donor}.")
+            print(f"  [warn] No gene-mapped tokens found for {cls} {label}.")
             continue
 
         df = pd.DataFrame(rows)
@@ -397,7 +418,7 @@ def extract_attention_rankings(
         df["rank"] = df.index + 1
         df["is_marker"] = df["gene"].isin(CRC_MARKERS)
         results[cls] = df
-        print(f"  [{donor}] {cls} attention: top gene = {df.iloc[0]['gene']} "
+        print(f"  [{label}] {cls} attention: top gene = {df.iloc[0]['gene']} "
               f"(mean_attn={df.iloc[0]['mean_attn']:.5f})")
 
     return results
@@ -405,7 +426,8 @@ def extract_attention_rankings(
 
 def plot_attention_ranking(
     rankings: Dict[str, pd.DataFrame],
-    donor: str,
+    label: str,
+    output_prefix: str,
     results_dir: Path,
 ) -> None:
     n_classes = len(rankings)
@@ -419,14 +441,14 @@ def plot_attention_ranking(
         top50 = df.head(TOP_N).copy()
         _dot_plot(
             axes[i, 0], top50, "mean_attn",
-            title=f"{donor} — {cls} — Top {TOP_N} by Attention Weight",
+            title=f"{label} — {cls} — Top {TOP_N} by Attention Weight",
             point_color=class_colors.get(cls, "#666666"),
             y_label="Mean attention received",
         )
 
-    fig.suptitle(f"Attention Ranking — {donor}", fontsize=12, fontweight="bold")
+    fig.suptitle(f"Attention Ranking — {label}", fontsize=12, fontweight="bold")
     fig.tight_layout()
-    out = results_dir / f"fold_{donor}_attention_ranking.png"
+    out = results_dir / f"{output_prefix}_attention_ranking.png"
     fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out}")
@@ -434,7 +456,7 @@ def plot_attention_ranking(
 
 def save_attention_tsv(
     rankings: Dict[str, pd.DataFrame],
-    donor: str,
+    output_prefix: str,
     results_dir: Path,
 ) -> None:
     rows = []
@@ -459,7 +481,7 @@ def save_attention_tsv(
     if "mean_attn_tumor" in pivot.columns:
         pivot = pivot.sort_values("mean_attn_tumor", ascending=False, na_position="last")
     pivot["rank_tumor"] = range(1, len(pivot) + 1)
-    out = results_dir / f"fold_{donor}_attention_genes.tsv"
+    out = results_dir / f"{output_prefix}_attention_genes.tsv"
     pivot.to_csv(out, sep="\t", index=False)
     print(f"  Saved: {out}")
 
@@ -471,7 +493,8 @@ def save_attention_tsv(
 def plot_combined(
     expr_rankings: Dict[str, pd.DataFrame],
     attn_rankings: Dict[str, pd.DataFrame],
-    donor: str,
+    label: str,
+    output_prefix: str,
     results_dir: Path,
 ) -> None:
     classes = [c for c in ("Tumor", "Normal") if c in expr_rankings or c in attn_rankings]
@@ -510,11 +533,11 @@ def plot_combined(
             axes[row, 1].text(0.5, 0.5, "No checkpoint", ha="center", va="center")
 
     fig.suptitle(
-        f"Expression vs Attention Ranking — {donor}",
+        f"Expression vs Attention Ranking — {label}",
         fontsize=13, fontweight="bold",
     )
     fig.tight_layout()
-    out = results_dir / f"fold_{donor}_combined_ranking.png"
+    out = results_dir / f"{output_prefix}_combined_ranking.png"
     fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved: {out}")
@@ -528,19 +551,26 @@ def main() -> None:
     args = parse_args()
     cfg = load_config(args)
 
-    donors = args.donors or cfg.get("donors") or ALL_DONORS
-    bad = [d for d in donors if d not in ALL_DONORS]
-    if bad:
-        raise ValueError(f"Unknown donors: {bad}")
+    # Mode resolution
+    single_fold = bool(args.single_fold) or bool(cfg.get("single_fold", False))
+    if not single_fold:
+        donors = args.donors or cfg.get("donors") or ALL_DONORS
+        bad = [d for d in donors if d not in ALL_DONORS]
+        if bad:
+            raise ValueError(f"Unknown donors: {bad}")
+    else:
+        donors = None
 
     results_dir = Path(cfg["results_dir"])
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load AnnData once (used by Part A for all donors)
-    print(f"\nLoading AnnData from {ANNDATA_PATH} …")
-    if not ANNDATA_PATH.exists():
-        raise FileNotFoundError(f"AnnData not found: {ANNDATA_PATH}")
-    adata = sc.read_h5ad(ANNDATA_PATH)
+    # Load AnnData once (used by Part A for all folds). Path is config-driven so
+    # lung uses gse131907 and CRC uses gse144735.
+    anndata_path = Path(cfg.get("anndata_path", ANNDATA_PATH))
+    print(f"\nLoading AnnData from {anndata_path} …")
+    if not anndata_path.exists():
+        raise FileNotFoundError(f"AnnData not found: {anndata_path}")
+    adata = sc.read_h5ad(anndata_path)
 
     # Ensure BinaryClass column exists in obs
     if "BinaryClass" not in adata.obs.columns and "Class" in adata.obs.columns:
@@ -589,23 +619,50 @@ def main() -> None:
     device = _get_device()
     print(f"Device: {device}")
 
-    for donor in donors:
+    # Build the (label, patient_ids, output_prefix, model_dir) list
+    folds_to_run: list[tuple[str, list[str], str, Path]] = []
+    if single_fold:
+        splits_path = tokens_dir / "splits_by_patient.npz"
+        if not splits_path.exists():
+            raise FileNotFoundError(
+                f"{splits_path} not found. Run `python scripts/lung_split.py` first, "
+                "or remove --single-fold to use LODO mode."
+            )
+        splits = np.load(splits_path, allow_pickle=True)
+        key = f"{args.split_set}_patients"
+        if key not in splits.files:
+            raise KeyError(f"{splits_path} missing array '{key}'")
+        patient_ids = [str(p) for p in splits[key].tolist()]
+        output_prefix = (args.output_prefix
+                         or cfg.get("output_prefix")
+                         or f"lung_{args.split_set}")
+        model_dir = Path(cfg["output_dir"])
+        folds_to_run.append((output_prefix, patient_ids, output_prefix, model_dir))
+        print(f"\n[single-fold] split={args.split_set}  patients={patient_ids}")
+        print(f"[single-fold] output_prefix={output_prefix}")
+    else:
+        for donor in donors:
+            folds_to_run.append((
+                donor, [donor], f"fold_{donor}",
+                Path(cfg["output_dir"]) / f"fold_{donor}",
+            ))
+
+    for label, patient_ids, output_prefix, model_dir in folds_to_run:
         sep = "-" * 50
-        print(f"\n{sep}\nDonor: {donor}\n{sep}")
+        print(f"\n{sep}\n{label}\n{sep}")
 
         # ── Part A: expression ranking ──────────────────────────────────
         print("Part A — expression ranking …")
-        expr_rankings = compute_expression_ranking(adata, donor, label_column)
-        plot_expression_ranking(expr_rankings, donor, results_dir)
+        expr_rankings = compute_expression_ranking(adata, patient_ids, label_column, label=label)
+        plot_expression_ranking(expr_rankings, label, output_prefix, results_dir)
 
         # ── Part B: attention ranking ───────────────────────────────────
         attn_rankings: Dict[str, pd.DataFrame] = {}
         if not args.skip_attention:
             print("Part B — attention ranking …")
             num_labels = len(id2label)
-            fold_out = Path(cfg["output_dir"]) / f"fold_{donor}"
             model = _load_fold_model(
-                fold_out,
+                model_dir,
                 use_base_model=args.use_base_model,
                 base_model_path=str(cfg["model_name_or_path"]),
                 num_labels=num_labels,
@@ -624,13 +681,13 @@ def main() -> None:
                     pad_fill_value=pad_fill_value,
                     model=model,
                     model_token_to_gene=model_token_to_gene,
-                    donor=donor,
+                    patient_ids=patient_ids,
+                    label=label,
                     cfg=cfg,
                     device=device,
                 )
-                plot_attention_ranking(attn_rankings, donor, results_dir)
-                save_attention_tsv(attn_rankings, donor, results_dir)
-                # Free model memory before next donor
+                plot_attention_ranking(attn_rankings, label, output_prefix, results_dir)
+                save_attention_tsv(attn_rankings, output_prefix, results_dir)
                 del model
                 if device.type == "mps":
                     torch.mps.empty_cache()
@@ -641,7 +698,7 @@ def main() -> None:
 
         # ── Part C: combined figure ─────────────────────────────────────
         print("Part C — combined figure …")
-        plot_combined(expr_rankings, attn_rankings, donor, results_dir)
+        plot_combined(expr_rankings, attn_rankings, label, output_prefix, results_dir)
 
     print(f"\nDone. Results in: {results_dir}")
 

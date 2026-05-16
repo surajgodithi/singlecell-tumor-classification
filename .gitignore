@@ -8,4 +8,12 @@ gse144735/
 gse131907/
 Geneformer/
 outputs/
+results/
+.DS_Store
 notebooks/lung_*.ipynb
+
+# Suspended on 2026-05-15 (CRC pipeline paused, pivoted to lung).
+# Already-tracked files stay tracked until `git rm --cached`; listed here so re-additions
+# don't sneak in.
+notebooks/colon_*.ipynb
+configs/lodo_cv.yaml

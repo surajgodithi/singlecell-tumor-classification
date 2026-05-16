@@ -1,0 +1,33 @@
+# Config for lung gene_ranking + perturbation runs.
+# Switches the scripts off the LODO loop and onto the single-fold path that uses
+# splits_by_patient.npz from lung_split.py.
+#
+# Run:
+#     python scripts/gene_ranking_analysis.py --config configs/lung_perturbation.yaml --single-fold
+#     python scripts/in_silico_perturbation.py --config configs/lung_perturbation.yaml --single-fold
+
+model_name_or_path: Geneformer/Geneformer-V2-104M
+model_vocab: Geneformer/geneformer/token_dictionary_gc104M.pkl
+model_gene_name_dict: Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
+
+tokens_dir: gse131907/processed/tokens
+anndata_path: gse131907/processed/gse131907_filtered_raw.h5ad
+output_dir: outputs/lung                   # where lung_train.py writes the checkpoint
+results_dir: results/lung
+output_prefix: lung_test                   # results files named lung_test_*.tsv
+
+label_column: BinaryClass
+
+# Single-fold mode (vs CRC LODO): use splits_by_patient.npz to pick cells.
+single_fold: true
+
+max_length: 2048
+attn_batch_size: 2          # conservative for MPS at L=2048
+seed: 42
+
+# Phase 1 panel for in_silico_perturbation.py.
+# - lung_adc: EGFR, KRAS, ALK, TP53, STK11, KEAP1, NF1, RBM10, MET, ERBB2
+# - crc:      KRAS, APC, TP53, MYC, EGFR, BRAF, EPCAM, CDX2, SMAD4, PIK3CA
+# - both:     union (de-duplicated, lung_adc first)
+marker_panel: lung_adc
+include_housekeepers: true   # ACTB, GAPDH, RPL13A, B2M, HPRT1, PPIA, TBP, UBC, YWHAZ, SDHA

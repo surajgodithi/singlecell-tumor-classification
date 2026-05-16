@@ -1,0 +1,62 @@
+model_name_or_path: Geneformer/Geneformer-V2-104M
+model_vocab: Geneformer/geneformer/token_dictionary_gc104M.pkl
+model_gene_name_dict: Geneformer/geneformer/gene_name_id_dict_gc104M.pkl
+
+tokens_dir: gse131907/processed/tokens
+output_dir: outputs/lung
+results_dir: results/lung
+
+label_column: BinaryClass
+
+# Loss — lung dataset is 32,054 Tumor : 3,703 Normal (≈10:1 Tumor-majority).
+# The class_donor weighted sampler reduces *per-batch* imbalance to ~2.4:1
+# (17 Tumor-contributing patient-class groups vs 7 Normal-contributing groups),
+# but the model still sees Tumor patterns much more often across an epoch. A
+# pure mirror of CRC's focal2 (Tumor 2.05 for a 2.3:1 imbalance) would just give
+# Normal=2.5, but that risks under-correcting given the raw global ratio.
+#
+# Setting Normal=4.0 as a middle ground between the sampler-corrected 2.5 and
+# the raw-inverse 10.0. If first run shows poor Tumor recall, drop Normal toward
+# 2.5; if Normal recall is still low, push toward 5–6.
+focal_gamma: 1.0
+class_weights:
+  Normal: 4.0
+  Tumor: 1.0
+
+# Regularisation
+token_mask_prob: 0.01
+mixup_prob: 0.0
+mixup_alpha: 0.4
+
+# Sampler — "Patient" column is treated as the donor. With ~28 tumor patients
+# this still helps; class_donor weighting balances per-batch (Patient × Class)
+# representation independently of the global 7:1 class ratio.
+balance_strategy: class_donor
+
+# Training schedule
+# Epochs raised to 8 + patience 3 (vs CRC's 5+patience 2) because lung is a different
+# dataset — we don't know yet if epoch 5 is the best as it was for CRC. Let it train
+# longer and let early stopping decide.
+num_epochs: 8
+learning_rate: 2.0e-5
+weight_decay: 0.01
+warmup_ratio: 0.10
+gradient_accumulation_steps: 8
+train_batch_size: 4
+eval_batch_size: 8
+eval_accumulation_steps: 16
+patience: 3
+max_length: 2048
+seed: 42
+
+# Speed — same stack validated for CRC LODO. SDPA+ckpt safe at fp32; bf16
+# remains unverified on MPS PyTorch 2.11 (produced NaN grads on CRC).
+amp_dtype: none
+attn_implementation: sdpa
+length_bucketing: true
+bucket_mega_factor: 50
+pad_to_multiple_of: 8
+save_total_limit: 2
+
+# Memory
+gradient_checkpointing: true
