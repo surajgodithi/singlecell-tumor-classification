@@ -39,8 +39,8 @@ QC → Tokenization → Patient-level split → Fine-tune (Geneformer-V2-104M)
 | Tokenization | `scripts/lung_tokenize.py` — labeling rule above, ranked gene tokens (top 2048 / cell) |
 | Splits | `scripts/lung_split.py` — patient-level 70/15/15, stratified by `{tumor_only, normal_only, both}` |
 | Training | `scripts/lung_train.py` + `configs/lung_train.yaml` |
-| Gene ranking | `scripts/gene_ranking_analysis.py --config configs/lung_perturbation.yaml --single-fold` |
-| Perturbation | `scripts/in_silico_perturbation.py --config configs/lung_perturbation.yaml --single-fold` |
+| Gene ranking | `scripts/gene_ranking_analysis.py` + `configs/lung_perturbation.yaml` |
+| Perturbation | `scripts/in_silico_perturbation.py` + `configs/lung_perturbation.yaml` |
 | Aggregation | `scripts/aggregate_perturbation.py` (cross-experiment combining) |
 
 ## Perturbation phases
