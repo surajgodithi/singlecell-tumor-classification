@@ -10,6 +10,7 @@ tqdm==4.67.1
 pyarrow>=17.0.0
 torch>=2.4.0
 transformers>=4.46.3
+accelerate>=1.1.0
 pyyaml==6.0.2
 ml-dtypes>=0.4.0
 xgboost>=2.0.0

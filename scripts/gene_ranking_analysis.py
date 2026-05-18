@@ -58,7 +58,7 @@ from finetune_transformer import (
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-DEFAULT_CONFIG = Path("configs/lodo_cv.yaml")
+DEFAULT_CONFIG = Path("configs/lung_perturbation.yaml")
 TOKEN_GLOB = "*_gene_rank_tokens.npz"
 META_GLOB = "*_tokens_metadata.tsv"
 ALL_DONORS = ["KUL01", "KUL19", "KUL21", "KUL28", "KUL30", "KUL31"]

@@ -3,8 +3,8 @@
 # splits_by_patient.npz from lung_split.py.
 #
 # Run:
-#     python scripts/gene_ranking_analysis.py --config configs/lung_perturbation.yaml --single-fold
-#     python scripts/in_silico_perturbation.py --config configs/lung_perturbation.yaml --single-fold
+#     python scripts/gene_ranking_analysis.py 
+#     python scripts/in_silico_perturbation.py 
 
 model_name_or_path: Geneformer/Geneformer-V2-104M
 model_vocab: Geneformer/geneformer/token_dictionary_gc104M.pkl
