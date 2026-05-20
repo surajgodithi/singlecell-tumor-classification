@@ -250,36 +250,90 @@ def _load_discovery_genes(
     remap: Optional[np.ndarray],
     pad_fill_value: int,
 ) -> List[str]:
-    """Top-N attention genes (preferred) or token frequency fallback."""
+    """Build the Phase 2 candidate gene list. Blends attention ranking with
+    differential-expression (logFC) ranking when both TSVs are available.
+
+    Slot allocation (with both present):
+      - LOGFC_NOVEL_SLOTS slots reserved for genes high in logFC that are NOT
+        already in attention's top picks (walk-and-skip: skip overlaps, take
+        the next logFC gene until the reserved slots are filled).
+      - The remaining (top_n - LOGFC_NOVEL_SLOTS) slots come from attention.
+
+    Falls back to pure attention if no logFC TSV, pure logFC if no attention
+    TSV, or token frequency if neither exists.
+    """
+    LOGFC_NOVEL_SLOTS = min(50, top_n // 4)  # 25% of slots, capped at 50
+
     attn_tsv = results_dir / f"{output_prefix}_attention_genes.tsv"
+    logfc_tsv = results_dir / f"{output_prefix}_logfc_genes.tsv"
+
+    attn_genes: List[str] = []
     if attn_tsv.exists():
         df = pd.read_csv(attn_tsv, sep="\t")
         if "mean_attn_tumor" in df.columns:
-            genes = (
+            attn_genes = (
                 df.sort_values("mean_attn_tumor", ascending=False, na_position="last")
-                .head(top_n)["gene"]
-                .tolist()
+                ["gene"].dropna().astype(str).tolist()
             )
-            print(f"  [{label}] Discovery genes from attention TSV "
-                  f"({len(genes)} genes, {attn_tsv.name})")
-            return genes
 
-    print(f"  [{label}] No attention TSV ({attn_tsv.name}) — token-frequency fallback.")
-    max_len = tokens.shape[1]
-    sub_seqs = tokens[cell_indices, :max_len].astype(np.int64)
-    real_mask = sub_seqs != -1
-    padded_seqs = sub_seqs.copy()
-    padded_seqs[~real_mask] = pad_fill_value
-    remapped_seqs = remap[padded_seqs] if remap is not None else padded_seqs
-    real_toks = remapped_seqs[real_mask]
-    tok_ids, counts = np.unique(real_toks, return_counts=True)
-    gene_freq = [
-        (model_token_to_gene[t], c)
-        for t, c in zip(tok_ids.tolist(), counts.tolist())
-        if t in model_token_to_gene
-    ]
-    gene_freq.sort(key=lambda x: x[1], reverse=True)
-    return [g for g, _ in gene_freq[:top_n]]
+    logfc_genes: List[str] = []
+    if logfc_tsv.exists():
+        df = pd.read_csv(logfc_tsv, sep="\t")
+        if "log2fc_tumor" in df.columns:
+            logfc_genes = (
+                df.sort_values("log2fc_tumor", ascending=False, na_position="last")
+                ["gene"].dropna().astype(str).tolist()
+            )
+
+    if not attn_genes and not logfc_genes:
+        print(f"  [{label}] No attention or logFC TSV — token-frequency fallback.")
+        max_len = tokens.shape[1]
+        sub_seqs = tokens[cell_indices, :max_len].astype(np.int64)
+        real_mask = sub_seqs != -1
+        padded_seqs = sub_seqs.copy()
+        padded_seqs[~real_mask] = pad_fill_value
+        remapped_seqs = remap[padded_seqs] if remap is not None else padded_seqs
+        real_toks = remapped_seqs[real_mask]
+        tok_ids, counts = np.unique(real_toks, return_counts=True)
+        gene_freq = [
+            (model_token_to_gene[t], c)
+            for t, c in zip(tok_ids.tolist(), counts.tolist())
+            if t in model_token_to_gene
+        ]
+        gene_freq.sort(key=lambda x: x[1], reverse=True)
+        return [g for g, _ in gene_freq[:top_n]]
+
+    if attn_genes and not logfc_genes:
+        genes = attn_genes[:top_n]
+        print(f"  [{label}] Discovery: {len(genes)} from attention (no logFC TSV)")
+        return genes
+
+    if logfc_genes and not attn_genes:
+        genes = logfc_genes[:top_n]
+        print(f"  [{label}] Discovery: {len(genes)} from logFC (no attention TSV)")
+        return genes
+
+    # Both present — walk-and-skip blend.
+    n_logfc_target = LOGFC_NOVEL_SLOTS
+    n_attn = top_n - n_logfc_target
+    attn_picks = attn_genes[:n_attn]
+    attn_set = set(attn_picks)
+
+    logfc_novel: List[str] = []
+    n_overlap = 0
+    for g in logfc_genes:
+        if len(logfc_novel) >= n_logfc_target:
+            break
+        if g in attn_set:
+            n_overlap += 1
+        else:
+            logfc_novel.append(g)
+
+    discovery = attn_picks + logfc_novel
+    print(f"  [{label}] Discovery: {len(attn_picks)} from attention + "
+          f"{len(logfc_novel)} novel from logFC "
+          f"(skipped {n_overlap} overlaps in logFC top ranks) = {len(discovery)} total")
+    return discovery
 
 
 # ---------------------------------------------------------------------------

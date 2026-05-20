@@ -28,6 +28,7 @@ Usage
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Dict, Optional, Tuple
@@ -64,10 +65,28 @@ META_GLOB = "*_tokens_metadata.tsv"
 ALL_DONORS = ["KUL01", "KUL19", "KUL21", "KUL28", "KUL30", "KUL31"]
 ANNDATA_PATH = Path("gse144735/processed/gse144735_filtered_raw.h5ad")
 CRC_MARKERS = ["KRAS", "APC", "TP53", "MYC", "EGFR", "BRAF", "EPCAM", "CDX2", "SMAD4", "PIK3CA"]
+LUNG_ADC_MARKERS = ["EGFR", "KRAS", "ALK", "TP53", "STK11", "KEAP1", "NF1", "RBM10", "MET", "ERBB2"]
+# Resolved at runtime in main() from cfg["marker_panel"]; defaults to LUAD panel.
+MARKERS: list = list(LUNG_ADC_MARKERS)
+MARKER_LABEL: str = "LUAD marker"
 TOP_N = 50
 TUMOR_COLOR = "#e74c3c"
 NORMAL_COLOR = "#3498db"
 MARKER_COLOR = "#f39c12"
+
+
+def _resolve_marker_panel(panel: Optional[str]) -> Tuple[list, str]:
+    """Return (markers, legend_label) for a config marker_panel value."""
+    p = (panel or "lung_adc").lower()
+    if p == "lung_adc":
+        return list(LUNG_ADC_MARKERS), "LUAD marker"
+    if p == "crc":
+        return list(CRC_MARKERS), "CRC marker"
+    if p == "both":
+        return list(dict.fromkeys(LUNG_ADC_MARKERS + CRC_MARKERS)), "Driver marker"
+    if p == "none":
+        return [], "Marker"
+    raise ValueError(f"Unknown marker_panel '{panel}'. Use lung_adc | crc | both | none.")
 FALLBACK_DEFAULTS: dict = {
     "tokens_dir": "gse144735/processed/tokens",
     "output_dir": "outputs/lodo",
@@ -188,7 +207,7 @@ def compute_expression_ranking(
         df = pd.DataFrame({"gene": gene_names, "mean_expr": mean_expr})
         df = df.sort_values("mean_expr", ascending=False).reset_index(drop=True)
         df["rank"] = df.index + 1
-        df["is_marker"] = df["gene"].isin(CRC_MARKERS)
+        df["is_marker"] = df["gene"].isin(MARKERS)
         results[cls] = df.head(TOP_N).copy()
         print(f"  [{label or ','.join(pat_str)}] {cls}: {n_cells} cells, top gene = {df.iloc[0]['gene']} "
               f"(mean={df.iloc[0]['mean_expr']:.2f})")
@@ -210,7 +229,7 @@ def _dot_plot(
     ax.scatter(non_markers["rank"], non_markers[y_col],
                color=point_color, s=30, alpha=0.7, zorder=2, label="Gene")
     ax.scatter(markers_in_top["rank"], markers_in_top[y_col],
-               color=MARKER_COLOR, s=80, marker="*", zorder=3, label="CRC marker")
+               color=MARKER_COLOR, s=80, marker="*", zorder=3, label=MARKER_LABEL)
 
     for _, row in markers_in_top.iterrows():
         ax.annotate(row["gene"], (row["rank"], row[y_col]),
@@ -250,6 +269,122 @@ def plot_expression_ranking(
     out = results_dir / f"{output_prefix}_expression_ranking.png"
     fig.savefig(out, dpi=120, bbox_inches="tight")
     plt.close(fig)
+    print(f"  Saved: {out}")
+
+
+# ---------------------------------------------------------------------------
+# Part A.5 — log2 fold-change ranking (differential expression)
+# ---------------------------------------------------------------------------
+# Raw expression ranking is dominated by housekeeping / lineage genes that are
+# abundant in both classes. logFC asks "what *changes* between Tumor and Normal"
+# regardless of absolute level — surfaces modestly-expressed but discriminative
+# genes (the classical DEA view), complementing attention ranking.
+
+def compute_logfc_ranking(
+    adata: sc.AnnData,
+    patient_ids: list,
+    label_column: str,
+    label: str = "",
+) -> Dict[str, pd.DataFrame]:
+    """Per class, return the FULL gene table ranked by descending log2 fold
+    change of that class vs the rest, with Wilcoxon p-values. Plotting slices
+    head(TOP_N); save_logfc_tsv writes the whole thing for downstream use."""
+    pat_str = [str(p) for p in patient_ids]
+    donor_mask = adata.obs["Patient"].astype(str).isin(pat_str)
+    sub = adata[donor_mask].copy()
+    classes_present = set(sub.obs[label_column].dropna().unique())
+    if "Tumor" not in classes_present or "Normal" not in classes_present:
+        print(f"  [warn] logFC needs both Tumor and Normal; "
+              f"{label} has {sorted(classes_present)} — skipping.")
+        return {}
+
+    # Use log1p-normalized layer if available so log2FC is meaningful.
+    layer = "log1p_norm" if "log1p_norm" in sub.layers else None
+    sub.obs[label_column] = sub.obs[label_column].astype("category")
+    sc.tl.rank_genes_groups(
+        sub, groupby=label_column, method="wilcoxon",
+        layer=layer, use_raw=False,
+    )
+
+    results = {}
+    for cls in ("Tumor", "Normal"):
+        if cls not in sub.obs[label_column].unique():
+            continue
+        df = sc.get.rank_genes_groups_df(sub, group=cls)
+        df = df.rename(columns={"names": "gene", "logfoldchanges": "log2fc"})
+        df = df.sort_values("log2fc", ascending=False).reset_index(drop=True)
+        df["rank"] = df.index + 1
+        df["is_marker"] = df["gene"].isin(MARKERS)
+        results[cls] = df  # full table; consumers slice as needed
+        top = df.iloc[0]
+        print(f"  [{label or ','.join(pat_str)}] {cls} logFC: top gene = {top['gene']} "
+              f"(log2FC={top['log2fc']:.2f}, p_adj={top['pvals_adj']:.2e})")
+    return results
+
+
+def plot_logfc_ranking(
+    rankings: Dict[str, pd.DataFrame],
+    label: str,
+    output_prefix: str,
+    results_dir: Path,
+) -> None:
+    n_classes = len(rankings)
+    if n_classes == 0:
+        return
+    fig, axes = plt.subplots(n_classes, 1, figsize=(10, 5 * n_classes), squeeze=False)
+    class_colors = {"Tumor": TUMOR_COLOR, "Normal": NORMAL_COLOR}
+    for i, (cls, df) in enumerate(rankings.items()):
+        _dot_plot(
+            axes[i, 0], df.head(TOP_N).copy(), "log2fc",
+            title=f"{label} — {cls} — Top {TOP_N} by log2 Fold Change vs other class",
+            point_color=class_colors.get(cls, "#666666"),
+            y_label="log2 fold change",
+        )
+    fig.suptitle(f"Differential Expression (logFC) Ranking — {label}",
+                 fontsize=12, fontweight="bold")
+    fig.tight_layout()
+    out = results_dir / f"{output_prefix}_logfc_ranking.png"
+    fig.savefig(out, dpi=120, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved: {out}")
+
+
+def save_logfc_tsv(
+    rankings: Dict[str, pd.DataFrame],
+    output_prefix: str,
+    results_dir: Path,
+) -> None:
+    """Write a per-gene TSV with log2fc_tumor, log2fc_normal, p-values."""
+    rows = []
+    for cls, df in rankings.items():
+        # Keep full ranking from scanpy, not just top TOP_N, for downstream use.
+        # df here is the head(TOP_N); we need full data for the TSV.
+        tmp = df[["rank", "gene", "log2fc", "pvals_adj", "is_marker"]].copy()
+        tmp.insert(0, "class", cls)
+        rows.append(tmp)
+    if not rows:
+        return
+    combined = pd.concat(rows, ignore_index=True)
+    pivot_fc = combined.pivot_table(
+        index="gene", columns="class", values="log2fc", aggfunc="first"
+    ).reset_index()
+    pivot_fc.columns.name = None
+    pivot_p = combined.pivot_table(
+        index="gene", columns="class", values="pvals_adj", aggfunc="first"
+    )
+    for cls in ("Tumor", "Normal"):
+        if cls not in pivot_fc.columns:
+            pivot_fc[cls] = float("nan")
+        if cls not in pivot_p.columns:
+            pivot_p[cls] = float("nan")
+    pivot_fc = pivot_fc.rename(columns={"Tumor": "log2fc_tumor", "Normal": "log2fc_normal"})
+    pivot_fc["padj_tumor"] = pivot_fc["gene"].map(pivot_p["Tumor"])
+    pivot_fc["padj_normal"] = pivot_fc["gene"].map(pivot_p["Normal"])
+    pivot_fc["is_marker"] = pivot_fc["gene"].isin(MARKERS)
+    pivot_fc = pivot_fc.sort_values("log2fc_tumor", ascending=False, na_position="last")
+    pivot_fc["rank_tumor"] = range(1, len(pivot_fc) + 1)
+    out = results_dir / f"{output_prefix}_logfc_genes.tsv"
+    pivot_fc.to_csv(out, sep="\t", index=False)
     print(f"  Saved: {out}")
 
 
@@ -416,7 +551,7 @@ def extract_attention_rankings(
         df = pd.DataFrame(rows)
         df = df.sort_values("mean_attn", ascending=False).reset_index(drop=True)
         df["rank"] = df.index + 1
-        df["is_marker"] = df["gene"].isin(CRC_MARKERS)
+        df["is_marker"] = df["gene"].isin(MARKERS)
         results[cls] = df
         print(f"  [{label}] {cls} attention: top gene = {df.iloc[0]['gene']} "
               f"(mean_attn={df.iloc[0]['mean_attn']:.5f})")
@@ -476,7 +611,7 @@ def save_attention_tsv(
         if cls not in pivot.columns:
             pivot[cls] = float("nan")
     pivot = pivot.rename(columns={"Tumor": "mean_attn_tumor", "Normal": "mean_attn_normal"})
-    pivot["is_marker"] = pivot["gene"].isin(CRC_MARKERS)
+    pivot["is_marker"] = pivot["gene"].isin(MARKERS)
     # Rank by tumor attention for the output ordering
     if "mean_attn_tumor" in pivot.columns:
         pivot = pivot.sort_values("mean_attn_tumor", ascending=False, na_position="last")
@@ -496,13 +631,18 @@ def plot_combined(
     label: str,
     output_prefix: str,
     results_dir: Path,
+    logfc_rankings: Optional[Dict[str, pd.DataFrame]] = None,
 ) -> None:
-    classes = [c for c in ("Tumor", "Normal") if c in expr_rankings or c in attn_rankings]
+    logfc_rankings = logfc_rankings or {}
+    classes = [
+        c for c in ("Tumor", "Normal")
+        if c in expr_rankings or c in attn_rankings or c in logfc_rankings
+    ]
     if not classes:
         return
 
     n_rows = len(classes)
-    fig, axes = plt.subplots(n_rows, 2, figsize=(18, 5 * n_rows), squeeze=False)
+    fig, axes = plt.subplots(n_rows, 3, figsize=(27, 5 * n_rows), squeeze=False)
     class_colors = {"Tumor": TUMOR_COLOR, "Normal": NORMAL_COLOR}
 
     for row, cls in enumerate(classes):
@@ -520,9 +660,21 @@ def plot_combined(
         else:
             axes[row, 0].text(0.5, 0.5, "No data", ha="center", va="center")
 
-        if cls in attn_rankings:
+        if cls in logfc_rankings:
             _dot_plot(
                 axes[row, 1],
+                logfc_rankings[cls].head(TOP_N),
+                "log2fc",
+                title=f"{cls} — log2 Fold Change Ranking",
+                point_color=color,
+                y_label="log2 fold change",
+            )
+        else:
+            axes[row, 1].text(0.5, 0.5, "No logFC", ha="center", va="center")
+
+        if cls in attn_rankings:
+            _dot_plot(
+                axes[row, 2],
                 attn_rankings[cls].head(TOP_N),
                 "mean_attn",
                 title=f"{cls} — Attention Ranking",
@@ -530,10 +682,10 @@ def plot_combined(
                 y_label="Mean attention received",
             )
         else:
-            axes[row, 1].text(0.5, 0.5, "No checkpoint", ha="center", va="center")
+            axes[row, 2].text(0.5, 0.5, "No checkpoint", ha="center", va="center")
 
     fig.suptitle(
-        f"Expression vs Attention Ranking — {label}",
+        f"Expression vs logFC vs Attention Ranking — {label}",
         fontsize=13, fontweight="bold",
     )
     fig.tight_layout()
@@ -550,6 +702,11 @@ def plot_combined(
 def main() -> None:
     args = parse_args()
     cfg = load_config(args)
+
+    # Resolve which marker panel highlights stars + labels the legend on plots.
+    global MARKERS, MARKER_LABEL
+    MARKERS, MARKER_LABEL = _resolve_marker_panel(cfg.get("marker_panel"))
+    print(f"[markers] panel={cfg.get('marker_panel', 'lung_adc')} → {len(MARKERS)} genes, legend='{MARKER_LABEL}'")
 
     # Mode resolution
     single_fold = bool(args.single_fold) or bool(cfg.get("single_fold", False))
@@ -572,8 +729,32 @@ def main() -> None:
         raise FileNotFoundError(f"AnnData not found: {anndata_path}")
     adata = sc.read_h5ad(anndata_path)
 
-    # Ensure BinaryClass column exists in obs
-    if "BinaryClass" not in adata.obs.columns and "Class" in adata.obs.columns:
+    # Ensure BinaryClass + Patient columns match the labeling/ID rule the tokens were
+    # built with, so cell filters here line up with splits_by_patient.npz.
+    if "Cell_subtype" in adata.obs.columns:
+        # Lung (GSE131907): apply the same rule as lung_tokenize.py.
+        obs = adata.obs
+        is_tumor = (
+            (obs["Cell_subtype"] == "Malignant cells")
+            | (
+                (obs["Sample_Origin"] == "tLung")
+                & (obs["Cell_type.refined"] == "Epithelial cells")
+            )
+        )
+        is_normal = (
+            (obs["Sample_Origin"] == "nLung")
+            & (obs["Cell_type.refined"] == "Epithelial cells")
+        )
+        binary = pd.Series(index=obs.index, dtype="object")
+        binary[is_tumor] = "Tumor"
+        binary[is_normal & ~is_tumor] = "Normal"
+        adata.obs["BinaryClass"] = binary
+        def _patient_id(sample: str) -> str:
+            m = re.search(r"(\d+)", str(sample))
+            return m.group(1) if m else str(sample)
+        adata.obs["Patient"] = obs["Sample"].astype(str).map(_patient_id)
+    elif "BinaryClass" not in adata.obs.columns and "Class" in adata.obs.columns:
+        # CRC (GSE144735): Class is already Tumor/Normal/Border.
         adata.obs["BinaryClass"] = adata.obs["Class"].replace({"Border": "Normal"})
     label_column = cfg["label_column"]
     print(f"AnnData: {adata.shape[0]} cells × {adata.shape[1]} genes")
@@ -656,6 +837,12 @@ def main() -> None:
         expr_rankings = compute_expression_ranking(adata, patient_ids, label_column, label=label)
         plot_expression_ranking(expr_rankings, label, output_prefix, results_dir)
 
+        # ── Part A.5: log2 fold-change (differential expression) ────────
+        print("Part A.5 — log2 fold-change ranking …")
+        logfc_rankings = compute_logfc_ranking(adata, patient_ids, label_column, label=label)
+        plot_logfc_ranking(logfc_rankings, label, output_prefix, results_dir)
+        save_logfc_tsv(logfc_rankings, output_prefix, results_dir)
+
         # ── Part B: attention ranking ───────────────────────────────────
         attn_rankings: Dict[str, pd.DataFrame] = {}
         if not args.skip_attention:
@@ -698,7 +885,10 @@ def main() -> None:
 
         # ── Part C: combined figure ─────────────────────────────────────
         print("Part C — combined figure …")
-        plot_combined(expr_rankings, attn_rankings, label, output_prefix, results_dir)
+        plot_combined(
+            expr_rankings, attn_rankings, label, output_prefix, results_dir,
+            logfc_rankings=logfc_rankings,
+        )
 
     print(f"\nDone. Results in: {results_dir}")
 
